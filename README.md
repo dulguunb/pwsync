@@ -158,6 +158,12 @@ write. On every run:
 - an entry disappeared on one side → reported (`deletes = "ignore"`, the
   default) or deleted on the other (`--deletes propagate`).
 
+Bitwarden happily holds two logins with the same name *and* username;
+pykeepass refuses to create a second one in the same group. pwsync mirrors the
+duplicate instead of failing, because the link table — not the title — is what
+identifies an entry. Two identical Bitwarden items therefore become two
+identical KeePass entries, both tracked separately.
+
 Matching of entries that are not linked yet is heuristic: equal title and
 username, unique on both sides. Ambiguous matches are reported and never
 guessed. Use `pwsync link --bw-id … --keepass-uuid …` to link manually.

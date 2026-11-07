@@ -163,15 +163,25 @@ class Keepass:
 
     def create(self, entry: Entry) -> str:
         group = self.ensure_folder_group(entry.folder)
-        kp_entry = self.kp.add_entry(
-            group,
-            entry.title,
-            entry.username,
-            entry.password,
-            url=entry.url or None,
-            notes=entry.notes or None,
-            otp=entry.totp or None,
-        )
+        try:
+            kp_entry = self.kp.add_entry(
+                group,
+                entry.title,
+                entry.username,
+                entry.password,
+                url=entry.url or None,
+                notes=entry.notes or None,
+                otp=entry.totp or None,
+                # Bitwarden happily holds two logins with the same name and
+                # username; pykeepass refuses that by default. The link table,
+                # not the title, is what identifies an entry here, so mirror
+                # Bitwarden's duplicates instead of failing the whole run.
+                force_creation=True,
+            )
+        except Exception as exc:  # pykeepass raises bare Exception for many cases
+            raise KeepassError(
+                f"cannot create '{entry.title}' in group '{entry.folder or '/'}': {exc}"
+            ) from exc
         self._apply_custom(kp_entry, entry)
         self.dirty = True
         return str(kp_entry.uuid)

@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from pwsync.bitwarden import Bitwarden
 from pwsync.cli import main
 from pwsync.config import Config
-from pwsync.keepass import Keepass
+from pwsync.keepass import Keepass, KeepassError
 from pwsync.state import State
 from pwsync.sync import Syncer
 from pwsync.totp import normalize
@@ -518,3 +518,48 @@ def test_unusable_state_file_is_a_clean_error(tmp_path, capsys, monkeypatch):
     err = capsys.readouterr().err
     assert "state file" in err
     assert "Traceback" not in err
+
+
+def test_bitwarden_duplicates_become_duplicate_keepass_entries(tmp_path):
+    """Bitwarden allows two logins with the same title and username."""
+    env = Env(tmp_path)
+    env.bw_add("example.com", "alice", "one")
+    execute(env)  # creates the KeePass entry and the link
+
+    # the user duplicates the item in Bitwarden
+    env.bw_add("example.com", "alice", "two")
+
+    plan, result = execute(env)
+    assert kinds(plan) == ["create-keepassxc"]
+    assert result.errors == []
+
+    titles = [entry.title for entry in env.kp_entries().values()]
+    assert titles.count("example.com") == 2
+    assert len(json.loads(env.state_file.read_text())["links"]) == 2
+
+    plan2, _ = execute(env)
+    assert plan2.actions == []
+
+
+def test_a_failed_create_does_not_abort_the_run(tmp_path, monkeypatch):
+    env = Env(tmp_path)
+    env.bw_add("first", "alice", "1")
+    env.bw_add("second", "alice", "2")
+
+    real_create = Keepass.create
+    calls = {"n": 0}
+
+    def flaky(self, entry):
+        calls["n"] += 1
+        if entry.title == "first":
+            raise KeepassError("simulated failure")
+        return real_create(self, entry)
+
+    monkeypatch.setattr(Keepass, "create", flaky)
+
+    plan, result = execute(env)
+
+    assert len(result.errors) == 1
+    assert "simulated failure" in result.errors[0]
+    # the other item still made it across
+    assert [e.title for e in env.kp_entries().values()] == ["second"]
