@@ -1,0 +1,264 @@
+"""Command line interface for pwsync."""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import os
+import sys
+from pathlib import Path
+
+from . import __version__
+from .bitwarden import Bitwarden, BitwardenError
+from .config import DEFAULT_NAME, Config, ConfigError, example_toml, load
+from .keepass import Keepass, KeepassError
+from .state import State, StateError
+from .sync import Plan, Result, Syncer
+
+LABELS = {
+    "create-bitwarden": "create -> Bitwarden",
+    "create-keepassxc": "create -> KeePassXC",
+    "update-bitwarden": "update -> Bitwarden",
+    "update-keepassxc": "update -> KeePassXC",
+    "delete-bitwarden": "delete -> Bitwarden",
+    "delete-keepassxc": "delete -> KeePassXC",
+    "missing": "deleted on one side",
+    "conflict": "CONFLICT",
+    "link": "link",
+    "orphan": "orphan link",
+    "skip": "keep",
+}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", help="path to pwsync.toml")
+    common.add_argument("--kdbx-password-env", default="PWSYNC_KDBX_PASSWORD",
+                        help="environment variable holding the KeePass master password "
+                             "(default: PWSYNC_KDBX_PASSWORD)")
+    common.add_argument("--kdbx-password-file",
+                        help="file containing the KeePass master password")
+
+    parser = argparse.ArgumentParser(
+        prog="pwsync",
+        description="Two-way password sync between KeePassXC and Bitwarden.",
+    )
+    parser.add_argument("--version", action="version", version=f"pwsync {__version__}")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    init = sub.add_parser("init", help="write a configuration template")
+    init.add_argument("path", nargs="?", default=DEFAULT_NAME)
+    init.add_argument("--force", action="store_true", help="overwrite an existing file")
+
+    sub.add_parser("status", parents=[common], help="show vault and link status")
+
+    for name, help_text in (("diff", "show what a sync would change"),
+                            ("apply", "apply the pending changes")):
+        cmd = sub.add_parser(name, parents=[common], help=help_text)
+        cmd.add_argument("--prefer", choices=("newest", "bitwarden", "keepassxc"),
+                         help="conflict policy for this run")
+        cmd.add_argument("--deletes", choices=("ignore", "propagate"),
+                         help="deletion policy for this run")
+        if name == "apply":
+            cmd.add_argument("--dry-run", action="store_true",
+                             help="print the plan without writing anything")
+
+    link = sub.add_parser("link", parents=[common], help="manually link two entries")
+    link.add_argument("--bw-id", required=True)
+    link.add_argument("--keepass-uuid", required=True)
+    link.add_argument("--prefer", choices=("bitwarden", "keepassxc"), default="keepassxc",
+                      help="side whose current content is treated as correct")
+
+    unlink = sub.add_parser("unlink", parents=[common], help="drop a recorded link")
+    unlink.add_argument("--bw-id", required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return _dispatch(args)
+    except (ConfigError, KeepassError, BitwardenError, StateError) as exc:
+        print(f"pwsync: {exc}", file=sys.stderr)
+        return 2
+
+
+def _dispatch(args: argparse.Namespace) -> int:
+    if args.command == "init":
+        path = Path(args.path).expanduser()
+        if path.exists() and not args.force:
+            raise ConfigError(f"{path} already exists; pass --force to overwrite")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(example_toml(), encoding="utf-8")
+        print(f"wrote {path}")
+        return 0
+
+    cfg = load(args.config)
+    if args.command == "status":
+        return _status(cfg)
+    if args.command == "unlink":
+        return _unlink(cfg, args)
+    if args.command == "link":
+        return _link(cfg, args)
+
+    state = State.open(cfg.state_file)
+    try:
+        with _vaults(cfg, args) as (keepass, bitwarden):
+            syncer = Syncer(cfg, keepass, bitwarden, state)
+            plan = syncer.build_plan(prefer=getattr(args, "prefer", None),
+                                     deletes=getattr(args, "deletes", None))
+            applying = args.command == "apply" and not getattr(args, "dry_run", False)
+            _print_plan(plan, hint=not applying)
+            if args.command == "diff" or getattr(args, "dry_run", False):
+                return 1 if plan.conflicts or plan.writes else 0
+            result = syncer.apply(plan, deletes=getattr(args, "deletes", None))
+            _print_result(result)
+            return 1 if result.errors else 0
+    finally:
+        state.close()
+
+
+class _vaults:
+    """Open both vaults, unlocking Bitwarden on demand, and never leak secrets."""
+
+    def __init__(self, cfg: Config, args: argparse.Namespace):
+        self.cfg = cfg
+        self.args = args
+
+    def __enter__(self):
+        password = _kdbx_password(self.args)
+        keepass = Keepass(
+            self.cfg.database,
+            password,
+            root_group=self.cfg.root_group,
+            keyfile=self.cfg.keyfile,
+            separator=self.cfg.folder_separator,
+        )
+        bitwarden = Bitwarden(self.cfg.bw_binary)
+        try:
+            bitwarden.ensure_session()
+        except BitwardenError as exc:
+            message = str(exc).lower()
+            if sys.stdin.isatty() and ("locked" in message or "bw_session" in message):
+                bitwarden.password = getpass.getpass("Bitwarden master password: ")
+                bitwarden.ensure_session()
+            else:
+                raise
+        return keepass, bitwarden
+
+    def __exit__(self, *exc_info) -> None:
+        return None
+
+
+def _kdbx_password(args: argparse.Namespace) -> str:
+    env_name = getattr(args, "kdbx_password_env", None) or "PWSYNC_KDBX_PASSWORD"
+    value = os.environ.get(env_name)
+    if value:
+        return value
+    path = getattr(args, "kdbx_password_file", None)
+    if path:
+        text = Path(path).expanduser().read_text(encoding="utf-8")
+        # Only drop the trailing newline; passwords may legitimately contain
+        # leading/trailing whitespace.
+        text = text.splitlines()[0] if text.splitlines() else ""
+        if not text:
+            raise ConfigError(f"{path} is empty")
+        return text
+    if sys.stdin.isatty():
+        return getpass.getpass("KeePass master password: ")
+    raise ConfigError(
+        f"no KeePass password: set {env_name} or pass --kdbx-password-file"
+    )
+
+
+def _print_plan(plan: Plan, hint: bool = True) -> None:
+    for notice in plan.notices:
+        print(f"note: {notice}")
+    visible = [a for a in plan.ordered() if a.kind != "skip"]
+    if not visible:
+        if not plan.notices:
+            print("Everything is in sync.")
+    for action in visible:
+        label = LABELS.get(action.kind, action.kind)
+        line = f"  {label:<22} {action.title}"
+        detail = action.describe_fields()
+        if detail:
+            line += f"  ({detail})"
+        if action.note:
+            line += f"  [{action.note}]"
+        print(line)
+    skipped = [a for a in plan.ordered() if a.kind == "skip"]
+    if skipped:
+        print(f"  ({len(skipped)} tombstoned entr{'y' if len(skipped) == 1 else 'ies'} left alone)")
+    if plan.writes and hint:
+        print(f"\n{len(plan.writes)} change(s) pending; run `pwsync apply` to write them.")
+
+
+def _print_result(result: Result) -> None:
+    print(
+        f"done: {len(result.created)} created, {len(result.updated)} updated, "
+        f"{len(result.deleted)} deleted, {len(result.tombstoned)} tombstoned"
+    )
+    for line in result.created + result.updated + result.deleted:
+        print(f"  + {line}")
+    for error in result.errors:
+        print(f"  ! {error}", file=sys.stderr)
+
+
+def _status(cfg: Config) -> int:
+    print(f"config      {cfg.config_path}")
+    print(f"database    {cfg.database} ({'ok' if cfg.database.is_file() else 'MISSING'})")
+    try:
+        state = Bitwarden(cfg.bw_binary).status()
+        line = str(state.get("status"))
+        if state.get("userEmail"):
+            line += f"  {state['userEmail']}"
+        print(f"bitwarden   {line}")
+    except BitwardenError as exc:
+        print(f"bitwarden   error: {exc}")
+    record = State.open(cfg.state_file)
+    try:
+        tombstones = sum(len(side) for side in record.tombstones.values())
+        print(f"links       {len(record.links)}")
+        print(f"tombstones  {tombstones}")
+    finally:
+        record.close()
+    return 0
+
+
+def _link(cfg: Config, args: argparse.Namespace) -> int:
+    state = State.open(cfg.state_file)
+    try:
+        with _vaults(cfg, args) as (keepass, bitwarden):
+            kp_entries = keepass.entries()
+            bw_entries = bitwarden.entries()
+            if args.keepass_uuid not in kp_entries:
+                raise ConfigError(f"no KeePass entry with UUID {args.keepass_uuid}")
+            if args.bw_id not in bw_entries:
+                raise ConfigError(f"no Bitwarden login item with id {args.bw_id}")
+            kp_entry = kp_entries[args.keepass_uuid]
+            bw_entry = bw_entries[args.bw_id]
+            winning = kp_entry if args.prefer == "keepassxc" else bw_entry
+            state.link(args.bw_id, args.keepass_uuid, winning.content_hash())
+            state.save()
+            print(f"linked '{kp_entry.title}' <-> '{bw_entry.title}' ({args.prefer} wins)")
+            return 0
+    finally:
+        state.close()
+
+
+def _unlink(cfg: Config, args: argparse.Namespace) -> int:
+    state = State.open(cfg.state_file)
+    try:
+        if args.bw_id not in state.links:
+            raise ConfigError(f"no recorded link for Bitwarden item {args.bw_id}")
+        state.unlink(args.bw_id)
+        state.save()
+        print(f"unlinked {args.bw_id}")
+        return 0
+    finally:
+        state.close()
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
