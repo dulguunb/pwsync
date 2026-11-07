@@ -56,13 +56,30 @@ conflict = "newest"         # newest | bitwarden | keepassxc
 deletes = "ignore"          # ignore | propagate
 ```
 
-Provide credentials through the environment (or you will be prompted when a
-terminal is attached):
+Only the Bitwarden session comes from the environment; the KeePass master
+password is **prompted for** and never touches it:
 
 ```bash
-export PWSYNC_KDBX_PASSWORD='…'   # KeePass master password
-export BW_SESSION="$(bw unlock --raw)"
+export BW_SESSION="$(bw unlock --raw)"   # bw's own mechanism
+uv run pwsync diff                       # asks for the KeePass master password
 ```
+
+### Where the KeePass password comes from
+
+In order of precedence:
+
+| Source | When |
+| --- | --- |
+| `--kdbx-password-file PATH` | unattended runs; keep the file at mode 0600 |
+| `--kdbx-password-env NAME` | unattended runs, when you explicitly name a variable |
+| interactive prompt | **the default** — `getpass`, never stored, never exported |
+
+The environment is deliberately **not** consulted by default. Anything in a
+process's environment is readable by other processes of the same user through
+`/proc/<pid>/environ`, and `export PWSYNC_KDBX_PASSWORD=…` also lands in your
+shell history. Only pass `--kdbx-password-env NAME` when a scheduler needs it —
+and then prefer a file, or a variable injected by the supervisor rather than
+typed into an interactive shell.
 
 > Security note: the official `bw` CLI receives item payloads (including the
 > password) as base64 command-line arguments. On a multi-user system where

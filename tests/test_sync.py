@@ -424,6 +424,12 @@ def test_totp_disabled_lets_each_vault_keep_its_own(tmp_path):
 
 # -- missing files ------------------------------------------------------
 
+def _password_file(env, password=PASSWORD):
+    path = env.dir / "master-pass.txt"
+    path.write_text(password)
+    return str(path)
+
+
 def _config_for(env):
     path = env.dir / "pwsync.toml"
     path.write_text(
@@ -437,9 +443,11 @@ def _config_for(env):
 def test_missing_database_is_reported_not_created(tmp_path, capsys, monkeypatch):
     env = Env(tmp_path)
     env.db.unlink()
-    monkeypatch.setenv("PWSYNC_KDBX_PASSWORD", PASSWORD)
 
-    assert main(["diff", "--config", str(_config_for(env))]) == 2
+    code = main(["diff", "--config", str(_config_for(env)),
+                 "--kdbx-password-file", _password_file(env)])
+
+    assert code == 2
 
     assert not env.db.exists(), "pwsync must not invent an empty vault"
     err = capsys.readouterr().err
@@ -510,9 +518,8 @@ def test_unusable_state_file_is_a_clean_error(tmp_path, capsys, monkeypatch):
         f'state_file = "{env.state_file}"',
         f'state_file = "{blocker / "state.json"}"',
     ))
-    monkeypatch.setenv("PWSYNC_KDBX_PASSWORD", PASSWORD)
-
-    code = main(["diff", "--config", str(config)])
+    code = main(["diff", "--config", str(config),
+                 "--kdbx-password-file", _password_file(env)])
 
     assert code == 2
     err = capsys.readouterr().err
@@ -581,11 +588,49 @@ def test_warns_when_the_database_is_world_readable(tmp_path, capsys, monkeypatch
     env = Env(tmp_path)
     env.kp_add("Acme", "alice", "pw")
     env.db.chmod(0o644)
-    monkeypatch.setenv("PWSYNC_KDBX_PASSWORD", PASSWORD)
     monkeypatch.setenv("BW_SESSION", "fake-session")
 
-    main(["diff", "--config", str(_config_for(env))])
+    main(["diff", "--config", str(_config_for(env)),
+          "--kdbx-password-file", _password_file(env)])
 
     err = capsys.readouterr().err
     assert "readable by other users" in err
     assert "chmod 600" in err
+
+
+# -- password sourcing --------------------------------------------------
+
+def test_environment_password_is_ignored_unless_requested(tmp_path, capsys, monkeypatch):
+    env = Env(tmp_path)
+    monkeypatch.setenv("PWSYNC_KDBX_PASSWORD", PASSWORD)
+
+    code = main(["diff", "--config", str(_config_for(env))])
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "master password" in err
+    assert "kdbx-password-file" in err
+
+
+def test_environment_password_works_when_explicitly_named(tmp_path, monkeypatch):
+    env = Env(tmp_path)
+    env.kp_add("Acme", "alice", "pw")
+    monkeypatch.setenv("MY_VAULT_PW", PASSWORD)
+    monkeypatch.setenv("BW_SESSION", "fake-session")
+
+    code = main(["diff", "--config", str(_config_for(env)),
+                 "--kdbx-password-env", "MY_VAULT_PW"])
+
+    # 1 = work pending (diff's normal exit); what matters is that the vault opened
+    assert code == 1
+
+
+def test_named_environment_variable_must_be_set(tmp_path, capsys, monkeypatch):
+    env = Env(tmp_path)
+    monkeypatch.delenv("EMPTY_ONE", raising=False)
+
+    code = main(["diff", "--config", str(_config_for(env)),
+                 "--kdbx-password-env", "EMPTY_ONE"])
+
+    assert code == 2
+    assert "EMPTY_ONE" in capsys.readouterr().err

@@ -33,11 +33,13 @@ LABELS = {
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", help="path to pwsync.toml")
-    common.add_argument("--kdbx-password-env", default="PWSYNC_KDBX_PASSWORD",
-                        help="environment variable holding the KeePass master password "
-                             "(default: PWSYNC_KDBX_PASSWORD)")
     common.add_argument("--kdbx-password-file",
                         help="file containing the KeePass master password")
+    common.add_argument("--kdbx-password-env", default=None,
+                        help="read the master password from this environment variable; "
+                             "opt-in, because environment variables are readable by "
+                             "other processes of the same user. Without this flag the "
+                             "password is prompted for and never touches the environment")
 
     parser = argparse.ArgumentParser(
         prog="pwsync",
@@ -182,10 +184,13 @@ def _init(args: argparse.Namespace) -> int:
 
 
 def _kdbx_password(args: argparse.Namespace) -> str:
-    env_name = getattr(args, "kdbx_password_env", None) or "PWSYNC_KDBX_PASSWORD"
-    value = os.environ.get(env_name)
-    if value:
-        return value
+    """The KeePass master password.
+
+    Order: an explicit file, then an explicitly named environment variable, then
+    an interactive prompt. The environment is never consulted by default --
+    ``/proc/<pid>/environ`` is readable by other processes of the same user, so
+    the password only goes there when the user asks for it (cron, systemd).
+    """
     path = getattr(args, "kdbx_password_file", None)
     if path:
         source = Path(path).expanduser()
@@ -202,10 +207,20 @@ def _kdbx_password(args: argparse.Namespace) -> str:
         if not text:
             raise ConfigError(f"{path} is empty")
         return text
+    env_name = getattr(args, "kdbx_password_env", None)
+    if env_name:
+        value = os.environ.get(env_name)
+        if value:
+            return value
+        raise ConfigError(
+            f"--kdbx-password-env {env_name} was given but that variable is empty"
+        )
     if sys.stdin.isatty():
         return getpass.getpass("KeePass master password: ")
     raise ConfigError(
-        f"no KeePass password: set {env_name} or pass --kdbx-password-file"
+        "no way to read the KeePass master password: run pwsync in a terminal to "
+        "be prompted, or pass --kdbx-password-file PATH (or --kdbx-password-env "
+        "NAME for unattended runs)"
     )
 
 
