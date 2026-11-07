@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from uuid import UUID
 
-from pykeepass import PyKeePass
+from pykeepass import PyKeePass, create_database
 
 from .model import Entry, as_utc
 from .totp import normalize
@@ -50,7 +50,11 @@ class Keepass:
         self.separator = separator
         self.dirty = False
         if not self.path.is_file():
-            raise KeepassError(f"KeePass database not found: {self.path}")
+            raise KeepassError(
+                f"KeePass database not found: {self.path}\n"
+                "create an empty one with:\n"
+                f"  pwsync init --database {self.path} --create-database"
+            )
         self._fingerprint = _read(self.path)
         try:
             self.kp = PyKeePass(
@@ -61,6 +65,19 @@ class Keepass:
         except Exception as exc:  # pykeepass raises assorted errors for bad credentials
             raise KeepassError(f"cannot open {self.path}: {exc}") from exc
         self.scope = self._find_scope()
+
+    @staticmethod
+    def create_database(path: str | Path, password: str,
+                        keyfile: str | Path | None = None) -> None:
+        """Create an empty :file:`.kdbx` so a fresh vault can be synced into."""
+        try:
+            create_database(
+                str(path),
+                password=password,
+                keyfile=str(keyfile) if keyfile else None,
+            )
+        except Exception as exc:  # pykeepass surfaces assorted OS/crypto errors
+            raise KeepassError(f"cannot create {path}: {exc}") from exc
 
     # -- groups -------------------------------------------------------------
     @property

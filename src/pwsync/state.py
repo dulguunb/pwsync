@@ -58,15 +58,25 @@ class State:
         return state
 
     def _acquire(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
-        self._lock = open(lock_path, "w")
         try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._lock = open(lock_path, "w")
             fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
+            self._close_lock()
+            raise StateError(f"another pwsync run holds the lock: {lock_path}") from exc
+        except OSError as exc:
+            self._close_lock()
+            raise StateError(
+                f"cannot use the state file {self.path}: {exc.strerror or exc}. "
+                f"Point [sync] state_file at a writable path."
+            ) from exc
+
+    def _close_lock(self) -> None:
+        if self._lock is not None:
             self._lock.close()
             self._lock = None
-            raise StateError(f"another pwsync run holds the lock: {lock_path}") from exc
 
     def load(self) -> None:
         if not self.path.exists():

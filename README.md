@@ -23,8 +23,18 @@ uv sync
 uv run pwsync --help
 ```
 
-`bw` must be installed and logged in (`bw login`), and the `.kdbx` file must
-already exist.
+`bw` must be installed and logged in (`bw login`).
+
+**No `.kdbx` yet?** pwsync never invents a vault silently, but it can create an
+empty one for you — the next sync then fills it from Bitwarden:
+
+```bash
+uv run pwsync init --database ~/new.kdbx --create-database
+```
+
+Pointing at a path that does not exist is an error (`exit 2`) listing that
+command, so a typo in `database = …` can never look like an empty vault. If the
+chosen vault is missing, nothing is written anywhere.
 
 ## Configure
 

@@ -46,9 +46,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"pwsync {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    init = sub.add_parser("init", help="write a configuration template")
+    init = sub.add_parser("init", parents=[common],
+                          help="write a configuration template")
     init.add_argument("path", nargs="?", default=DEFAULT_NAME)
     init.add_argument("--force", action="store_true", help="overwrite an existing file")
+    init.add_argument("--database", help="KeePass database path to record in the config")
+    init.add_argument("--create-database", action="store_true",
+                      help="create an empty .kdbx at --database if it is missing")
 
     sub.add_parser("status", parents=[common], help="show vault and link status")
 
@@ -81,17 +85,17 @@ def main(argv: list[str] | None = None) -> int:
     except (ConfigError, KeepassError, BitwardenError, StateError) as exc:
         print(f"pwsync: {exc}", file=sys.stderr)
         return 2
+    except OSError as exc:
+        # Disk full, permission denied, a vanished mount: say so plainly.
+        where = exc.filename or ""
+        detail = exc.strerror or str(exc)
+        print(f"pwsync: {detail}{f': {where}' if where else ''}", file=sys.stderr)
+        return 2
 
 
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "init":
-        path = Path(args.path).expanduser()
-        if path.exists() and not args.force:
-            raise ConfigError(f"{path} already exists; pass --force to overwrite")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(example_toml(), encoding="utf-8")
-        print(f"wrote {path}")
-        return 0
+        return _init(args)
 
     cfg = load(args.config)
     if args.command == "status":
@@ -150,6 +154,27 @@ class _vaults:
         return None
 
 
+def _init(args: argparse.Namespace) -> int:
+    config_path = Path(args.path).expanduser()
+    if config_path.exists() and not args.force:
+        raise ConfigError(f"{config_path} already exists; pass --force to overwrite")
+
+    database = str(Path(args.database).expanduser()) if args.database else None
+    if args.create_database:
+        if not database:
+            raise ConfigError("--create-database needs --database PATH")
+        target = Path(database)
+        if target.exists():
+            raise ConfigError(f"{target} already exists")
+        Keepass.create_database(target, _kdbx_password(args))
+        print(f"created {target}")
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(example_toml(database), encoding="utf-8")
+    print(f"wrote {config_path}")
+    return 0
+
+
 def _kdbx_password(args: argparse.Namespace) -> str:
     env_name = getattr(args, "kdbx_password_env", None) or "PWSYNC_KDBX_PASSWORD"
     value = os.environ.get(env_name)
@@ -157,7 +182,14 @@ def _kdbx_password(args: argparse.Namespace) -> str:
         return value
     path = getattr(args, "kdbx_password_file", None)
     if path:
-        text = Path(path).expanduser().read_text(encoding="utf-8")
+        source = Path(path).expanduser()
+        try:
+            text = source.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ConfigError(
+                f"cannot read the KeePass password file {source}: "
+                f"{exc.strerror or exc}"
+            ) from exc
         # Only drop the trailing newline; passwords may legitimately contain
         # leading/trailing whitespace.
         text = text.splitlines()[0] if text.splitlines() else ""

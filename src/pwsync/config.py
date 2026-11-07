@@ -113,14 +113,14 @@ def load(explicit: str | None = None) -> Config:
     return cfg
 
 
-def example_toml() -> str:
-    return """\
+def example_toml(database: str | None = None) -> str:
+    template = """\
 # pwsync configuration — see README.md for details.
 # Secrets never belong in this file.
 
 [keepass]
 # Path to the .kdbx database (relative paths resolve against this file's directory).
-database = "~/Passwords.kdbx"
+database = "__DATABASE__"
 # Optional: sync only this group subtree (created on first apply when missing).
 root_group = ""
 # keyfile = "~/.config/keepassxc/keyfile"
@@ -144,3 +144,4 @@ totp = true
 # state_file = "~/.local/state/pwsync/state.json"
 # backup_dir = "~/.local/state/pwsync/backups"
 """
+    return template.replace("__DATABASE__", database or "~/Passwords.kdbx")

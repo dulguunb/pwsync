@@ -420,3 +420,101 @@ def test_totp_disabled_lets_each_vault_keep_its_own(tmp_path):
 
     plan2, _ = execute(env)
     assert plan2.actions == []
+
+
+# -- missing files ------------------------------------------------------
+
+def _config_for(env):
+    path = env.dir / "pwsync.toml"
+    path.write_text(
+        f'[keepass]\ndatabase = "{env.db}"\n'
+        f'[bitwarden]\nbinary = "{sys.executable} {env.fake}"\n'
+        f'[sync]\nstate_file = "{env.state_file}"\n'
+    )
+    return path
+
+
+def test_missing_database_is_reported_not_created(tmp_path, capsys, monkeypatch):
+    env = Env(tmp_path)
+    env.db.unlink()
+    monkeypatch.setenv("PWSYNC_KDBX_PASSWORD", PASSWORD)
+
+    assert main(["diff", "--config", str(_config_for(env))]) == 2
+
+    assert not env.db.exists(), "pwsync must not invent an empty vault"
+    err = capsys.readouterr().err
+    assert "not found" in err
+    assert "--create-database" in err
+
+
+def test_missing_password_file_is_a_clean_error(tmp_path, capsys, monkeypatch):
+    env = Env(tmp_path)
+    monkeypatch.delenv("PWSYNC_KDBX_PASSWORD", raising=False)
+
+    code = main([
+        "diff", "--config", str(_config_for(env)),
+        "--kdbx-password-file", str(tmp_path / "no-such-file"),
+    ])
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "password file" in err
+    assert "Traceback" not in err
+
+
+def test_init_creates_an_empty_database(tmp_path, capsys):
+    env = Env(tmp_path)
+    password_file = tmp_path / "pw.txt"
+    password_file.write_text("fresh-pass")
+    fresh = tmp_path / "new.kdbx"
+    config = tmp_path / "pwsync.toml"
+
+    code = main([
+        "init", str(config),
+        "--database", str(fresh),
+        "--create-database",
+        "--kdbx-password-file", str(password_file),
+    ])
+
+    assert code == 0
+    assert fresh.is_file()
+    created = PyKeePass(str(fresh), password="fresh-pass")
+    assert created.entries == []
+    assert str(fresh) in config.read_text()
+    assert "fresh-pass" not in config.read_text()
+
+
+def test_init_refuses_to_clobber_an_existing_database(tmp_path, capsys):
+    env = Env(tmp_path)
+    password_file = tmp_path / "pw.txt"
+    password_file.write_text(PASSWORD)
+    config = tmp_path / "pwsync.toml"
+
+    code = main([
+        "init", str(config),
+        "--database", str(env.db),
+        "--create-database",
+        "--kdbx-password-file", str(password_file),
+    ])
+
+    assert code == 2
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_unusable_state_file_is_a_clean_error(tmp_path, capsys, monkeypatch):
+    env = Env(tmp_path)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    config = _config_for(env)
+    config.write_text(config.read_text().replace(
+        f'state_file = "{env.state_file}"',
+        f'state_file = "{blocker / "state.json"}"',
+    ))
+    monkeypatch.setenv("PWSYNC_KDBX_PASSWORD", PASSWORD)
+
+    code = main(["diff", "--config", str(config)])
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "state file" in err
+    assert "Traceback" not in err
