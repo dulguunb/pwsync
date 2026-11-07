@@ -139,6 +139,7 @@ conflict = "newest"
 # ignore | propagate — whether deletions travel across the sync.
 deletes = "ignore"
 custom_fields = true
+# false keeps each vault's TOTP as it is instead of syncing it.
 totp = true
 # state_file = "~/.local/state/pwsync/state.json"
 # backup_dir = "~/.local/state/pwsync/backups"

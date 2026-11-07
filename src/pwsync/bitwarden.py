@@ -16,6 +16,7 @@ import subprocess
 from datetime import datetime
 
 from .model import Entry, as_utc
+from .totp import normalize
 
 LOGIN_ITEM_TYPE = 1
 
@@ -57,7 +58,7 @@ def item_to_entry(item: dict, folder_names: dict[str, str]) -> Entry:
         password=login.get("password") or "",
         url=url,
         notes=item.get("notes") or "",
-        totp=login.get("totp") or "",
+        totp=normalize(login.get("totp") or "", item.get("name") or ""),
         folder=folder_names.get(item.get("folderId") or "", ""),
         custom=tuple(fields),
         updated=_parse_time(item.get("revisionDate")),

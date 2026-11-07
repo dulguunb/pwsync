@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from pwsync.config import Config
 from pwsync.keepass import Keepass
 from pwsync.state import State
 from pwsync.sync import Syncer
+from pwsync.totp import normalize
 
 PASSWORD = "correct horse battery staple"
 NOW = datetime.now(timezone.utc)
@@ -34,6 +36,7 @@ class Env:
         self.store = tmp_path / "bw.json"
         self.state_file = tmp_path / "state.json"
         self.backup_dir = tmp_path / "backups"
+        self.sync_totp = True
         self.fake = tmp_path / "fake_bw.py"
         shutil.copy(Path(__file__).parent / "fake_bw.py", self.fake)
         self.fake.chmod(0o755)
@@ -44,7 +47,8 @@ class Env:
     @property
     def cfg(self) -> Config:
         return Config(database=self.db, bw_binary=f"{sys.executable} {self.fake}",
-                      state_file=self.state_file, backup_dir=self.backup_dir)
+                      state_file=self.state_file, backup_dir=self.backup_dir,
+                      sync_totp=self.sync_totp)
 
     def kp(self) -> PyKeePass:
         return PyKeePass(str(self.db), password=PASSWORD)
@@ -335,3 +339,84 @@ def test_cli_status(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "links" in out
     assert "unlocked" in out
+
+
+# -- TOTP ---------------------------------------------------------------
+
+BARE = "JBSWY3DPEHPK3PXP"
+OTHER_BARE = "KRSXG5CTMVRXEZLU"
+
+
+def test_normalize_leaves_uris_and_junk_alone():
+    assert normalize("") == ""
+    uri = "otpauth://totp/Acme:alice?secret=JBSWY3DPEHPK3PXP&issuer=Acme"
+    assert normalize(uri) == uri
+    assert normalize("abc 0189", "Acme") == "abc 0189"
+
+
+def test_normalize_turns_a_seed_into_a_uri():
+    out = normalize(BARE, "Acme")
+    assert out.startswith("otpauth://totp/Acme?secret=JBSWY3DPEHPK3PXP")
+    assert "period=30" in out and "digits=6" in out
+    # lowercase, spaced and dashed seeds are accepted, as authenticator UIs show them
+    assert "JBSWY3DPEHPK3PXP" in normalize("jbsw y3dp-ehpk 3pxp", "Acme")
+
+
+def test_bitwarden_bare_secret_becomes_a_uri_for_keepass(tmp_path):
+    env = Env(tmp_path)
+    env.bw_add("Acme", "alice", "pw")
+    data = env.bw()
+    data["items"][0]["login"]["totp"] = BARE  # Bitwarden accepts a raw seed
+    env.bw_save(data)
+
+    execute(env)
+
+    entry = env.kp_entry("Acme")
+    assert entry.otp.startswith("otpauth://totp/")
+    assert BARE in entry.otp
+    # the link is stable: a second run must see no change
+    plan, _ = execute(env)
+    assert plan.actions == []
+
+
+@pytest.mark.skipif(shutil.which("keepassxc-cli") is None,
+                    reason="keepassxc-cli is not installed")
+def test_keepassxc_can_generate_a_code_from_the_synced_totp(tmp_path):
+    env = Env(tmp_path)
+    env.bw_add("Acme", "alice", "pw")
+    data = env.bw()
+    data["items"][0]["login"]["totp"] = BARE
+    env.bw_save(data)
+    execute(env)
+
+    proc = subprocess.run(
+        ["keepassxc-cli", "show", "-q", "-t", str(env.db), "Acme"],
+        input=PASSWORD + "\n", capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().isdigit()
+
+
+def test_totp_disabled_lets_each_vault_keep_its_own(tmp_path):
+    env = Env(tmp_path)
+    env.sync_totp = False
+    env.kp_add("Acme", "alice", "one", otp=f"otpauth://totp/Acme?secret={BARE}")
+    execute(env)
+
+    data = env.bw()
+    data["items"][0]["login"]["totp"] = f"otpauth://totp/Acme?secret={OTHER_BARE}"
+    env.bw_save(data)
+
+    kp = env.kp()
+    entry = next(e for e in kp.entries if e.title == "Acme")
+    entry.password = "two"
+    entry.mtime = NOW + timedelta(minutes=1)
+    kp.save()
+
+    plan, _ = execute(env)
+    assert kinds(plan) == ["update-bitwarden"]
+    assert env.bw_item("Acme")["login"]["totp"].endswith(OTHER_BARE)
+    assert BARE in env.kp_entry("Acme").otp
+
+    plan2, _ = execute(env)
+    assert plan2.actions == []

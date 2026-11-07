@@ -10,6 +10,7 @@ from uuid import UUID
 from pykeepass import PyKeePass
 
 from .model import Entry, as_utc
+from .totp import normalize
 
 
 class KeepassError(RuntimeError):
@@ -31,7 +32,7 @@ def entry_from_kp(entry, folder: str) -> Entry:
         password=entry.password or "",
         url=entry.url or "",
         notes=entry.notes or "",
-        totp=entry.otp or "",
+        totp=normalize(entry.otp or "", entry.title or ""),
         folder=folder,
         custom=custom,
         updated=as_utc(entry.mtime),
@@ -119,6 +120,10 @@ class Keepass:
                 continue
             out[str(kp_entry.uuid)] = entry_from_kp(kp_entry, folder)
         return out
+
+    def totp_of(self, uuid_str: str) -> str:
+        """The stored ``otp`` attribute, unnormalised."""
+        return self._find(uuid_str).otp or ""
 
     def _find(self, uuid_str: str):
         kp_entry = self.kp.find_entries(uuid=UUID(uuid_str), first=True)

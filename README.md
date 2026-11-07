@@ -95,6 +95,16 @@ password before syncing.
 field) sync in both directions, so your one-time codes keep working whichever
 vault you open.
 
+Bitwarden stores a TOTP as either a full `otpauth://` URI or a bare base32
+seed, while KeePassXC only generates codes from a URI — it stores a bare seed
+but silently ignores it. pwsync therefore canonicalises every value to an
+`otpauth://` URI, which also keeps the two sides' content hashes comparable.
+A seed that Bitwarden held bare is rewritten once as a URI on the first sync
+that touches that item; the secret, period and digit count are unchanged.
+
+Set `totp = false` under `[sync]` to leave each vault's TOTP alone; the rest of
+the entry still syncs.
+
 ## Use
 
 ```bash

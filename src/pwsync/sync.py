@@ -106,6 +106,11 @@ class Syncer:
         deletes = deletes or self.cfg.deletes
         bw = self.bitwarden.entries()
         kp = self.keepass.entries()
+        if not self.cfg.sync_totp:
+            # TOTP is left to each vault: blanking it here keeps it out of the
+            # hashes and the field diff without touching either stored value.
+            bw = {key: entry.with_changes(totp="") for key, entry in bw.items()}
+            kp = {key: entry.with_changes(totp="") for key, entry in kp.items()}
         plan = Plan()
         used_bw: set[str] = set()
         used_kp: set[str] = set()
@@ -315,22 +320,26 @@ class Syncer:
             self.state.link(self._require_key(action.bw_id), uuid, entry.content_hash())
             result.created.append(f"{entry.title} (KeePassXC)")
         elif kind == "update-keepassxc":
-            entry = self._require(action.entry)
-            self.keepass.update(self._require_key(action.kp_uuid), entry)
-            self.state.link(self._require_key(action.bw_id),
-                            self._require_key(action.kp_uuid), entry.content_hash())
+            kp_uuid = self._require_key(action.kp_uuid)
+            entry, outgoing = self._totp_pair(self._require(action.entry),
+                                              self.keepass.totp_of(kp_uuid))
+            self.keepass.update(kp_uuid, outgoing)
+            self.state.link(self._require_key(action.bw_id), kp_uuid,
+                            entry.content_hash())
             result.updated.append(f"{entry.title} (KeePassXC)")
         elif kind == "update-bitwarden":
-            entry = self._require(action.entry)
-            fid = self._folder_id(entry.folder)
-            payload = payload_from_entry(entry, fid)
-            current = self.bitwarden.get_item(self._require_key(action.bw_id))
+            bw_id = self._require_key(action.bw_id)
+            current = self.bitwarden.get_item(bw_id)
+            entry, outgoing = self._totp_pair(
+                self._require(action.entry), (current.get("login") or {}).get("totp")
+            )
+            payload = payload_from_entry(outgoing, self._folder_id(entry.folder))
             for keep in ("favorite", "organizationId", "collectionIds", "reprompt"):
                 if keep in current:
                     payload[keep] = current[keep]
-            self.bitwarden.update_item(self._require_key(action.bw_id), payload)
-            self.state.link(self._require_key(action.bw_id),
-                            self._require_key(action.kp_uuid), entry.content_hash())
+            self.bitwarden.update_item(bw_id, payload)
+            self.state.link(bw_id, self._require_key(action.kp_uuid),
+                            entry.content_hash())
             result.updated.append(f"{entry.title} (Bitwarden)")
         elif kind == "delete-keepassxc":
             self.keepass.delete(self._require_key(action.kp_uuid))
@@ -353,6 +362,17 @@ class Syncer:
             self.state.link(self._require_key(action.bw_id),
                             self._require_key(action.kp_uuid), entry.content_hash())
         # orphan / skip need no work
+
+    def _totp_pair(self, entry: Entry, live: object) -> tuple[Entry, Entry]:
+        """Split ``entry`` into (hash basis, outgoing write) for TOTP.
+
+        With ``totp = false`` the receiving vault keeps whatever TOTP it already
+        had, while the link hash is still taken from the TOTP-free entry so the
+        next run does not see a spurious change on both sides.
+        """
+        if self.cfg.sync_totp:
+            return entry, entry
+        return entry.with_changes(totp=""), entry.with_changes(totp=str(live or ""))
 
     @staticmethod
     def _require(value):
