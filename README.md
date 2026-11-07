@@ -1,5 +1,7 @@
 # pwsync
 
+[![CI](https://github.com/dulguunb/pwsync/actions/workflows/ci.yml/badge.svg)](https://github.com/dulguunb/pwsync/actions/workflows/ci.yml)
+
 Two-way password sync between a **KeePassXC** `.kdbx` database and a
 **Bitwarden** vault.
 
@@ -57,6 +59,41 @@ export BW_SESSION="$(bw unlock --raw)"
 > untrusted users can inspect running processes, the password is theoretically
 > visible to them. Use a private machine or run pwsync with appropriate
 > process-list restrictions.
+
+
+## Two-factor authentication
+
+**Bitwarden account 2FA (TOTP, WebAuthn/passkey, email, Duo)** is handled by
+`bw` itself, not by pwsync. `bw login` runs once per device and asks for the
+code; afterwards `bw unlock` only needs your master password, and pwsync works
+with the resulting `BW_SESSION`. pwsync never sees or stores your 2FA secret.
+
+For unattended runs (cron, systemd timer) an interactive `bw login` is not
+possible. Use a **personal API key**, which is exempt from 2FA prompts:
+
+```bash
+export BW_CLIENTID='user.xxxxxxxx-…'
+export BW_CLIENTSECRET='…'
+bw login --apikey
+export BW_SESSION="$(bw unlock --raw --passwordenv BW_PASSWORD)"
+```
+
+**KeePassXC key file** (password + key file) is supported:
+
+```toml
+[keepass]
+database = "~/Passwords.kdbx"
+keyfile = "~/.config/keepassxc/keyfile"
+```
+
+**KeePassXC YubiKey challenge-response is not supported.** pykeepass builds the
+composite key from a password and/or key file only, so a database protected by a
+YubiKey challenge-response cannot be opened — export or re-save it with a master
+password before syncing.
+
+**TOTP secrets stored on entries** (Bitwarden login TOTP ↔ KeePassXC `otp`
+field) sync in both directions, so your one-time codes keep working whichever
+vault you open.
 
 ## Use
 
