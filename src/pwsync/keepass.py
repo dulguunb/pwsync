@@ -79,6 +79,10 @@ class Keepass:
         except Exception as exc:  # pykeepass surfaces assorted OS/crypto errors
             raise KeepassError(f"cannot create {path}: {exc}") from exc
 
+    def loose_permissions(self) -> bool:
+        """True when the database is readable by group or others."""
+        return bool(self.path.stat().st_mode & 0o077)
+
     # -- groups -------------------------------------------------------------
     @property
     def _parts(self) -> list[str]:

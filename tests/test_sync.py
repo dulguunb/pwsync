@@ -563,3 +563,29 @@ def test_a_failed_create_does_not_abort_the_run(tmp_path, monkeypatch):
     assert "simulated failure" in result.errors[0]
     # the other item still made it across
     assert [e.title for e in env.kp_entries().values()] == ["second"]
+
+
+def test_state_file_lock_and_directory_are_private(tmp_path):
+    env = Env(tmp_path)
+    state = State.open(env.state_file)
+    state.save()
+    state.close()
+
+    lock = env.state_file.with_suffix(env.state_file.suffix + ".lock")
+    assert env.state_file.stat().st_mode & 0o777 == 0o600
+    assert lock.stat().st_mode & 0o777 == 0o600
+    assert env.state_file.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_warns_when_the_database_is_world_readable(tmp_path, capsys, monkeypatch):
+    env = Env(tmp_path)
+    env.kp_add("Acme", "alice", "pw")
+    env.db.chmod(0o644)
+    monkeypatch.setenv("PWSYNC_KDBX_PASSWORD", PASSWORD)
+    monkeypatch.setenv("BW_SESSION", "fake-session")
+
+    main(["diff", "--config", str(_config_for(env))])
+
+    err = capsys.readouterr().err
+    assert "readable by other users" in err
+    assert "chmod 600" in err

@@ -176,7 +176,11 @@ guessed. Use `pwsync link --bw-id … --keepass-uuid …` to link manually.
   server-side trash and history, so no plaintext vault export is kept locally.
 - The `.kdbx` file is written atomically and the write is refused if the file
   changed on disk since it was read.
-- A lock file prevents two syncs from running at once.
+- A lock file prevents two syncs from running at once; it is created 0600 inside
+  a 0700 state directory.
+- pwsync warns if the `.kdbx` is readable by other users (`chmod 600` it). The
+  file is always encrypted, but a world-readable vault invites an offline
+  brute-force attempt.
 - Deletions are never propagated unless you ask for it.
 
 ## Not supported (yet)

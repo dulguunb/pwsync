@@ -61,7 +61,11 @@ class State:
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self._lock = open(lock_path, "w")
+            os.chmod(self.path.parent, 0o700)
+            # 0600 from the moment it exists, so no window with looser mode.
+            fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY, 0o600)
+            os.chmod(lock_path, 0o600)
+            self._lock = os.fdopen(fd, "w")
             fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             self._close_lock()

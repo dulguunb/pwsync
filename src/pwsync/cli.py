@@ -138,6 +138,12 @@ class _vaults:
             keyfile=self.cfg.keyfile,
             separator=self.cfg.folder_separator,
         )
+        if keepass.loose_permissions():
+            print(
+                f"warning: {keepass.path} is readable by other users; "
+                f"consider `chmod 600 {keepass.path}`",
+                file=sys.stderr,
+            )
         bitwarden = Bitwarden(self.cfg.bw_binary)
         try:
             bitwarden.ensure_session()
