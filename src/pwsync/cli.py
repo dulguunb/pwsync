@@ -11,7 +11,7 @@ from pathlib import Path
 from . import __version__
 from .bitwarden import Bitwarden, BitwardenError
 from .config import DEFAULT_NAME, Config, ConfigError, example_toml, load
-from .googleauth import MigrationError, decode_uri, read_qr, secret_of
+from .googleauth import MigrationError, decode_uri, read_camera, read_qr, secret_of
 from .model import Entry
 from .keepass import Keepass, KeepassError
 from .state import State, StateError
@@ -94,6 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="an otpauth-migration:// string from the export QR")
     imp.add_argument("--image", action="append", default=[], metavar="FILE",
                      help="screenshot of that QR (decoded with zbarimg)")
+    imp.add_argument("--camera", nargs="?", const="/dev/video0", default=None,
+                     metavar="DEVICE",
+                     help="scan that QR with a camera, default /dev/video0 "
+                          "(needs zbarcam); may be combined with --image/--data")
     imp.add_argument("--group", default="",
                      help="KeePass group to import into (default: the sync root)")
     imp.add_argument("--dry-run", action="store_true", help="list without writing")
@@ -328,8 +332,10 @@ def _import_totp(cfg: Config, args: argparse.Namespace) -> int:
     uris = list(args.data)
     for image in args.image:
         uris.append(read_qr(image))
+    if args.camera:
+        uris.append(read_camera(args.camera))
     if not uris:
-        raise ConfigError("nothing to import: pass --data URI or --image FILE")
+        raise ConfigError("nothing to import: pass --camera, --image FILE or --data URI")
 
     accounts = []
     for uri in uris:

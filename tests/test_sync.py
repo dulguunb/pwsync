@@ -20,7 +20,7 @@ from pwsync.config import Config
 from pwsync.keepass import Keepass, KeepassError
 from pwsync.state import State
 from pwsync.sync import Syncer
-from pwsync.googleauth import decode_uri, secret_of
+from pwsync.googleauth import MigrationError, decode_uri, read_camera, secret_of
 from pwsync.totp import normalize
 
 PASSWORD = "correct horse battery staple"
@@ -812,3 +812,80 @@ def test_copy_dry_run_writes_nothing(tmp_path, monkeypatch):
 
     assert env.db.read_bytes() == db_before
     assert env.store.read_text() == store_before
+
+
+def test_import_totp_scans_with_the_camera(tmp_path, monkeypatch):
+    env = Env(tmp_path)
+    uri = _migration_uri([("JBSWY3DPEHPK3PXP", "alice@example.com", "GitHub", 1, 1, 2, 0)])
+    seen = {}
+
+    def fake_camera(device):
+        seen["device"] = device
+        return uri
+
+    monkeypatch.setattr("pwsync.cli.read_camera", fake_camera)
+
+    code = main(["import-totp", "--config", str(_config_for(env)),
+                 "--kdbx-password-file", _password_file(env), "--camera"])
+
+    assert code == 0
+    assert seen["device"] == "/dev/video0"
+    assert env.kp_entry("GitHub: alice@example.com") is not None
+
+
+def test_camera_device_can_be_chosen(tmp_path, monkeypatch):
+    env = Env(tmp_path)
+    uri = _migration_uri([("JBSWY3DPEHPK3PXP", "alice@example.com", "GitHub", 1, 1, 2, 0)])
+    seen = {}
+
+    def fake_camera(device):
+        seen["device"] = device
+        return uri
+
+    monkeypatch.setattr("pwsync.cli.read_camera", fake_camera)
+
+    main(["import-totp", "--config", str(_config_for(env)),
+          "--kdbx-password-file", _password_file(env), "--camera", "/dev/video1"])
+
+    assert seen["device"] == "/dev/video1"
+
+
+def test_read_camera_explains_a_busy_device(monkeypatch):
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "VIDIOC_STREAMON: Device or resource busy"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Result())
+
+    with pytest.raises(MigrationError, match="in use"):
+        read_camera()
+
+
+def test_read_camera_without_zbarcam(monkeypatch):
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("zbarcam")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+
+    with pytest.raises(MigrationError, match="zbarcam is not installed"):
+        read_camera()
+
+
+def test_import_totp_camera_runs_zbarcam(tmp_path, monkeypatch, capsys):
+    """The --camera path shells out to zbarcam for real, with a stub on PATH."""
+    env = Env(tmp_path)
+    uri = _migration_uri([("JBSWY3DPEHPK3PXP", "alice@example.com", "GitHub", 1, 1, 2, 0)])
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    stub = fake_bin / "zbarcam"
+    stub.write_text(f"#!/bin/sh\ncat <<'QR'\n{uri}\nQR\n")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+
+    code = main(["import-totp", "--config", str(_config_for(env)),
+                 "--kdbx-password-file", _password_file(env), "--camera", "--dry-run"])
+
+    assert code == 0
+    assert "would import GitHub: alice@example.com" in capsys.readouterr().out

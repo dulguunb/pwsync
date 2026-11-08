@@ -204,6 +204,36 @@ uv run pwsync import-totp --image export-1.png --dry-run
 uv run pwsync import-totp --image export-1.png --group "Imported 2FA"
 ```
 
+### Scanning the screen instead of a screenshot
+
+Nothing has to leave the phone: point the laptop camera at the QR.
+
+```bash
+uv run pwsync import-totp --camera                # /dev/video0
+uv run pwsync import-totp --camera /dev/video1    # a specific node
+```
+
+That is a thin wrapper around `zbarcam`, so the same thing by hand — useful when
+you want several batches in one go — is:
+
+```bash
+uv run pwsync import-totp \
+    --data "$(zbarcam --raw -1 --nodisplay -Sdisable -Sqrcode.enable /dev/video0)" \
+    --data "$(zbarcam --raw -1 --nodisplay -Sdisable -Sqrcode.enable /dev/video0)" --dry-run
+```
+
+Each `zbarcam` call waits for one QR and exits, so tap **Next** on the phone
+between them. `--data`, `--image` and `--camera` can be mixed freely and every
+value is deduplicated by secret.
+
+Two things to know about the camera path:
+
+- a V4L2 device can only be opened once — close `mpv`/`ffplay`/`vlc` previews
+  first, or you get `Device or resource busy`;
+- access normally comes from the logind seat ACL (`uaccess`). Over SSH, add
+  yourself to the `video` group instead: `sudo usermod -aG video $USER`, then
+  log out and back in.
+
 > An export QR contains the raw secrets: delete the screenshots once imported.
 > The command only prints account titles, never the seeds.
 

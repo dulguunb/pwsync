@@ -179,6 +179,34 @@ def decode_uri(uri: str) -> tuple[list[Account], int]:
 
 # -- getting the URI out of a screenshot --------------------------------
 
+def read_camera(device: str = "/dev/video0") -> str:
+    """Read one QR code from a camera using ``zbarcam``."""
+    try:
+        proc = subprocess.run(
+            ["zbarcam", "--raw", "--oneshot", "--nodisplay",
+             "-Sdisable", "-Sqrcode.enable", device],
+            capture_output=True, text=True, check=False,
+        )
+    except FileNotFoundError as exc:
+        raise MigrationError(
+            "zbarcam is not installed (install zbar-tools), or use --image FILE "
+            "or --data URI instead"
+        ) from exc
+    text = (proc.stdout or "").strip()
+    if proc.returncode == 0 and text:
+        return text
+    detail = (proc.stderr or "").strip()
+    lowered = detail.lower()
+    if "busy" in lowered:
+        raise MigrationError(
+            f"{device} is in use: close any preview (mpv/ffplay/vlc) and retry"
+        )
+    if "no such file" in lowered or "cannot open" in lowered:
+        raise MigrationError(f"cannot open {device}: {detail}")
+    raise MigrationError(f"no QR code read from {device}"
+                         + (f": {detail}" if detail else ""))
+
+
 def read_qr(image: str) -> str:
     """Read a QR code with zbarimg and return its text."""
     try:
