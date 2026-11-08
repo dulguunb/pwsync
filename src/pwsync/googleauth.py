@@ -179,14 +179,18 @@ def decode_uri(uri: str) -> tuple[list[Account], int]:
 
 # -- getting the URI out of a screenshot --------------------------------
 
-def read_camera(device: str = "/dev/video0") -> str:
-    """Read one QR code from a camera using ``zbarcam``."""
+def read_camera(device: str = "/dev/video0", preview: bool = False) -> str:
+    """Read one QR code from a camera using ``zbarcam``.
+
+    With ``preview`` the zbarcam window shows the live feed, so you can aim the
+    phone and see that the code is in frame; otherwise it scans silently.
+    """
+    command = ["zbarcam", "--raw", "--oneshot"]
+    if not preview:
+        command.append("--nodisplay")
+    command += ["-Sdisable", "-Sqrcode.enable", device]
     try:
-        proc = subprocess.run(
-            ["zbarcam", "--raw", "--oneshot", "--nodisplay",
-             "-Sdisable", "-Sqrcode.enable", device],
-            capture_output=True, text=True, check=False,
-        )
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)
     except FileNotFoundError as exc:
         raise MigrationError(
             "zbarcam is not installed (install zbar-tools), or use --image FILE "
@@ -200,6 +204,11 @@ def read_camera(device: str = "/dev/video0") -> str:
     if "busy" in lowered:
         raise MigrationError(
             f"{device} is in use: close any preview (mpv/ffplay/vlc) and retry"
+        )
+    if preview and ("display" in lowered or "gtk" in lowered or "wayland" in lowered):
+        raise MigrationError(
+            f"cannot open the preview window: {detail}. Use --no-preview to scan "
+            f"without one"
         )
     if "no such file" in lowered or "cannot open" in lowered:
         raise MigrationError(f"cannot open {device}: {detail}")

@@ -819,8 +819,9 @@ def test_import_totp_scans_with_the_camera(tmp_path, monkeypatch):
     uri = _migration_uri([("JBSWY3DPEHPK3PXP", "alice@example.com", "GitHub", 1, 1, 2, 0)])
     seen = {}
 
-    def fake_camera(device):
+    def fake_camera(device, preview=False):
         seen["device"] = device
+        seen["preview"] = preview
         return uri
 
     monkeypatch.setattr("pwsync.cli.read_camera", fake_camera)
@@ -838,8 +839,9 @@ def test_camera_device_can_be_chosen(tmp_path, monkeypatch):
     uri = _migration_uri([("JBSWY3DPEHPK3PXP", "alice@example.com", "GitHub", 1, 1, 2, 0)])
     seen = {}
 
-    def fake_camera(device):
+    def fake_camera(device, preview=False):
         seen["device"] = device
+        seen["preview"] = preview
         return uri
 
     monkeypatch.setattr("pwsync.cli.read_camera", fake_camera)
@@ -889,3 +891,76 @@ def test_import_totp_camera_runs_zbarcam(tmp_path, monkeypatch, capsys):
 
     assert code == 0
     assert "would import GitHub: alice@example.com" in capsys.readouterr().out
+
+
+def test_camera_status_is_reported_while_scanning(tmp_path, monkeypatch, capsys):
+    env = Env(tmp_path)
+    uri = _migration_uri([("JBSWY3DPEHPK3PXP", "alice@example.com", "GitHub", 1, 1, 2, 0)])
+    monkeypatch.setattr("pwsync.cli.read_camera", lambda device, preview=False: uri)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+
+    main(["import-totp", "--config", str(_config_for(env)),
+          "--kdbx-password-file", _password_file(env), "--camera", "--dry-run"])
+
+    err = capsys.readouterr().err
+    assert "scanning" in err
+    assert "/dev/video0" in err
+    assert "read a QR code" in err
+    assert "no display detected" in err
+
+
+def test_preview_is_used_when_a_display_exists(tmp_path, monkeypatch):
+    env = Env(tmp_path)
+    uri = _migration_uri([("JBSWY3DPEHPK3PXP", "alice@example.com", "GitHub", 1, 1, 2, 0)])
+    seen = {}
+
+    def fake_camera(device, preview=False):
+        seen["preview"] = preview
+        return uri
+
+    monkeypatch.setattr("pwsync.cli.read_camera", fake_camera)
+    monkeypatch.setenv("DISPLAY", ":0")
+
+    main(["import-totp", "--config", str(_config_for(env)),
+          "--kdbx-password-file", _password_file(env), "--camera", "--dry-run"])
+
+    assert seen["preview"] is True
+
+
+def test_no_preview_flag_disables_the_window(tmp_path, monkeypatch):
+    env = Env(tmp_path)
+    uri = _migration_uri([("JBSWY3DPEHPK3PXP", "alice@example.com", "GitHub", 1, 1, 2, 0)])
+    seen = {}
+
+    def fake_camera(device, preview=False):
+        seen["preview"] = preview
+        return uri
+
+    monkeypatch.setattr("pwsync.cli.read_camera", fake_camera)
+    monkeypatch.setenv("DISPLAY", ":0")
+
+    main(["import-totp", "--config", str(_config_for(env)),
+          "--kdbx-password-file", _password_file(env), "--camera", "--no-preview", "--dry-run"])
+
+    assert seen["preview"] is False
+
+
+def test_read_camera_command_includes_the_preview_window(monkeypatch):
+    calls = {}
+
+    class Result:
+        returncode = 0
+        stdout = "otpauth-migration://offline?data=x"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls["command"] = command
+        return Result()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    read_camera("/dev/video0", preview=True)
+    assert "--nodisplay" not in calls["command"]
+
+    read_camera("/dev/video0", preview=False)
+    assert "--nodisplay" in calls["command"]

@@ -98,6 +98,8 @@ def build_parser() -> argparse.ArgumentParser:
                      metavar="DEVICE",
                      help="scan that QR with a camera, default /dev/video0 "
                           "(needs zbarcam); may be combined with --image/--data")
+    imp.add_argument("--no-preview", action="store_true",
+                     help="scan without the live camera window (headless)")
     imp.add_argument("--group", default="",
                      help="KeePass group to import into (default: the sync root)")
     imp.add_argument("--dry-run", action="store_true", help="list without writing")
@@ -111,6 +113,9 @@ def main(argv: list[str] | None = None) -> int:
     except (ConfigError, KeepassError, BitwardenError, StateError) as exc:
         print(f"pwsync: {exc}", file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        print("\ncancelled", file=sys.stderr)
+        return 130
     except OSError as exc:
         # Disk full, permission denied, a vanished mount: say so plainly.
         where = exc.filename or ""
@@ -307,6 +312,22 @@ def _status(cfg: Config) -> int:
     return 0
 
 
+def _scan_camera(device: str, preview: bool) -> str:
+    """Scan one QR code, saying what is happening while the camera is open."""
+    show = preview and bool(
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    )
+    if preview and not show:
+        print("note: no display detected; scanning without a preview window",
+              file=sys.stderr)
+    hint = "a preview window shows what the camera sees" if show else "scanning"
+    print(f"{hint}: {device} — hold the QR in front of the camera "
+          f"(Ctrl+C to stop)", file=sys.stderr)
+    uri = read_camera(device, preview=show)
+    print(f"read a QR code from {device}", file=sys.stderr)
+    return uri
+
+
 def _copy(cfg: Config, args: argparse.Namespace) -> int:
     state = State.open(cfg.state_file)
     try:
@@ -333,7 +354,7 @@ def _import_totp(cfg: Config, args: argparse.Namespace) -> int:
     for image in args.image:
         uris.append(read_qr(image))
     if args.camera:
-        uris.append(read_camera(args.camera))
+        uris.append(_scan_camera(args.camera, preview=not args.no_preview))
     if not uris:
         raise ConfigError("nothing to import: pass --camera, --image FILE or --data URI")
 

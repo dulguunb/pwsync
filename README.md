@@ -213,6 +213,20 @@ uv run pwsync import-totp --camera                # /dev/video0
 uv run pwsync import-totp --camera /dev/video1    # a specific node
 ```
 
+While the camera is open it says so, and it opens a live preview window so you
+can see what the lens sees:
+
+```
+a preview window shows what the camera sees: /dev/video0 — hold the QR in front
+  of the camera (Ctrl+C to stop)
+read a QR code from /dev/video0
+  would import GitHub: alice@example.com (TOTP)
+```
+
+Add `--no-preview` to scan without the window (scripts, SSH, or a terminal with
+no display — in that case it also prints `note: no display detected`).
+`Ctrl+C` cancels cleanly with exit code 130 instead of a traceback.
+
 That is a thin wrapper around `zbarcam`, so the same thing by hand — useful when
 you want several batches in one go — is:
 
