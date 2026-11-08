@@ -18,6 +18,21 @@ Off limits from an agent session:
   the user's vault and asks for the master password;
 - reading a real `.kdbx`, `state.json`, `BW_SESSION`, `BW_PASSWORD`,
   `PWSYNC_KDBX_PASSWORD`, or a Bitwarden data directory by any other route.
+- **opening `state.json` at all** — see the rule below.
+
+## Never read the state file
+
+`~/.local/state/pwsync/state.json` (or whatever `[sync] state_file` points at) is
+off limits: do not open, print, `cat`, `grep`, parse, hash or copy it, and do not
+read its `backups/` directory or `.lock` file.
+
+Each `links` entry stores a SHA-256 digest computed over the entry's fields —
+password included. That makes the file a plaintext oracle for offline password
+guessing, so reading it is itself the risky step, however harmless the motive.
+
+This covers "just checking the structure", "how many links", "is the JSON
+valid". If the state needs to be known, ask the user to report it, or have them
+run `pwsync status`, which prints counts only.
 
 If a task seems to need vault access, stop and ask the user to run the command
 themselves, and say which command. Offer the flags; let them press Enter.
