@@ -172,6 +172,7 @@ class _vaults:
             root_group=self.cfg.root_group,
             keyfile=self.cfg.keyfile,
             separator=self.cfg.folder_separator,
+            exclude=self.cfg.exclude_groups,
         )
         if keepass.loose_permissions():
             print(
@@ -372,10 +373,13 @@ def _import_totp(cfg: Config, args: argparse.Namespace) -> int:
         root_group=cfg.root_group,
         keyfile=cfg.keyfile,
         separator=cfg.folder_separator,
+        exclude=cfg.exclude_groups,
     )
     # Compare on the secret itself: the same seed may already be stored with a
     # different label or parameter order.
-    known = {secret_of(entry.totp) for entry in keepass.entries().values() if entry.totp}
+    known = {secret_of(entry.totp)
+             for entry in keepass.entries(include_excluded=True).values()
+             if entry.totp}
 
     imported = skipped = 0
     for account in accounts:

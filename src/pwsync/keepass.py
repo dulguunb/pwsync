@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from uuid import UUID
 
@@ -44,10 +45,15 @@ class Keepass:
     """A live KeePass database, with writes buffered until :meth:`save`."""
 
     def __init__(self, path: str | Path, password: str, root_group: str = "",
-                 keyfile: str | Path | None = None, separator: str = "/"):
+                 keyfile: str | Path | None = None, separator: str = "/",
+                 exclude: Iterable[str] = ()):
         self.path = Path(path)
         self.root_group = root_group
         self.separator = separator
+        self.exclude = tuple(
+            tuple(part for part in group.split(separator) if part)
+            for group in exclude
+        )
         self.dirty = False
         if not self.path.is_file():
             raise KeepassError(
@@ -130,7 +136,11 @@ class Keepass:
             return None
         return self.separator.join(p for p in parts if p)
 
-    def entries(self) -> dict[str, Entry]:
+    def _excluded(self, folder: str) -> bool:
+        parts = tuple(part for part in folder.split(self.separator) if part)
+        return any(parts[:len(group)] == group for group in self.exclude)
+
+    def entries(self, include_excluded: bool = False) -> dict[str, Entry]:
         scope = self._find_scope()
         if scope is None:
             return {}
@@ -138,6 +148,8 @@ class Keepass:
         for kp_entry in self.kp.entries:
             folder = self._relative_folder(kp_entry, scope)
             if folder is None:
+                continue
+            if not include_excluded and self._excluded(folder):
                 continue
             out[str(kp_entry.uuid)] = entry_from_kp(kp_entry, folder)
         return out

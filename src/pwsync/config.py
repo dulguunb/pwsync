@@ -38,6 +38,7 @@ class Config:
     deletes: str = "ignore"
     sync_custom_fields: bool = True
     sync_totp: bool = True
+    exclude_groups: tuple[str, ...] = ()
     state_file: Path = field(default_factory=lambda: DEFAULT_STATE_FILE)
     backup_dir: Path = field(default_factory=lambda: DEFAULT_BACKUP_DIR)
     config_path: Path | None = None
@@ -105,12 +106,22 @@ def load(explicit: str | None = None) -> Config:
         deletes=str(sync.get("deletes", "ignore")),
         sync_custom_fields=bool(sync.get("custom_fields", True)),
         sync_totp=bool(sync.get("totp", True)),
+        exclude_groups=_as_groups(kp.get("exclude", ())),
         state_file=expand_path(str(sync.get("state_file", DEFAULT_STATE_FILE)), base),
         backup_dir=expand_path(str(sync.get("backup_dir", DEFAULT_BACKUP_DIR)), base),
         config_path=path,
     )
     cfg.validate()
     return cfg
+
+
+def _as_groups(value) -> tuple[str, ...]:
+    """Accept a list or a comma/space separated string of group paths."""
+    if isinstance(value, str):
+        raw = [part for chunk in value.split(",") for part in chunk.split()]
+    else:
+        raw = [str(item) for item in value]
+    return tuple(item.strip().strip("/") for item in raw if item and item.strip())
 
 
 def example_toml(database: str | None = None) -> str:
@@ -124,6 +135,8 @@ database = "__DATABASE__"
 # Optional: sync only this group subtree (created on first apply when missing).
 root_group = ""
 # keyfile = "~/.config/keepassxc/keyfile"
+# Groups the sync leaves alone, e.g. a 2FA directory kept only in KeePassXC.
+# exclude = ["2FA"]
 
 [bitwarden]
 # CLI used for every Bitwarden call. BW_SESSION / BW_PASSWORD come from the

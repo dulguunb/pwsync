@@ -201,8 +201,31 @@ importable into KeePassXC directly — no further conversion.
 
 ```bash
 uv run pwsync import-totp --image export-1.png --dry-run
-uv run pwsync import-totp --image export-1.png --group "Imported 2FA"
+uv run pwsync import-totp --image export-1.png --group "2FA"
 ```
+
+`--group` creates the group (and any parents) and imports into it, so the codes
+land in their own directory instead of the vault root:
+
+```
+2FA/
+  GitHub: alice@example.com
+  Bank: bob@example.com
+```
+
+Those are TOTP-only entries with no username or password, so by default the sync
+would offer to turn each one into a Bitwarden login. Keep them out of the sync
+by naming the directory in `[keepass]`:
+
+```toml
+[keepass]
+database = "~/Passwords.kdbx"
+exclude = ["2FA"]          # this subtree is left to KeePassXC
+```
+
+Excluded groups are skipped when reading the vault, so `diff` reports
+`Everything is in sync` instead of proposing to copy them, while `--group 2FA`
+imports still deduplicate against what is already there.
 
 ### Scanning the screen instead of a screenshot
 

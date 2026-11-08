@@ -39,6 +39,7 @@ class Env:
         self.state_file = tmp_path / "state.json"
         self.backup_dir = tmp_path / "backups"
         self.sync_totp = True
+        self.exclude_groups: tuple[str, ...] = ()
         self.fake = tmp_path / "fake_bw.py"
         shutil.copy(Path(__file__).parent / "fake_bw.py", self.fake)
         self.fake.chmod(0o755)
@@ -50,7 +51,8 @@ class Env:
     def cfg(self) -> Config:
         return Config(database=self.db, bw_binary=f"{sys.executable} {self.fake}",
                       state_file=self.state_file, backup_dir=self.backup_dir,
-                      sync_totp=self.sync_totp)
+                      sync_totp=self.sync_totp,
+                      exclude_groups=self.exclude_groups)
 
     def kp(self) -> PyKeePass:
         return PyKeePass(str(self.db), password=PASSWORD)
@@ -69,8 +71,8 @@ class Env:
         kp.save()
         return str(entry.uuid)
 
-    def kp_entries(self):
-        return Keepass(self.db, PASSWORD).entries()
+    def kp_entries(self, include_excluded: bool = False):
+        return Keepass(self.db, PASSWORD).entries(include_excluded=include_excluded)
 
     def kp_entry(self, title):
         return next((e for e in self.kp().entries if e.title == title), None)
@@ -115,7 +117,8 @@ class Env:
 
 def execute(env: Env, apply=True, prefer=None, deletes=None):
     cfg = env.cfg
-    keepass = Keepass(cfg.database, PASSWORD, separator=cfg.folder_separator)
+    keepass = Keepass(cfg.database, PASSWORD, separator=cfg.folder_separator,
+                      exclude=cfg.exclude_groups)
     bitwarden = Bitwarden(cfg.bw_binary)
     bitwarden.session = "fake-session"
     state = State.open(cfg.state_file)
@@ -434,8 +437,12 @@ def _password_file(env, password=PASSWORD):
 
 def _config_for(env):
     path = env.dir / "pwsync.toml"
+    exclude = ""
+    if env.exclude_groups:
+        listed = ", ".join(f'"{group}"' for group in env.exclude_groups)
+        exclude = f"exclude = [{listed}]\n"
     path.write_text(
-        f'[keepass]\ndatabase = "{env.db}"\n'
+        f'[keepass]\ndatabase = "{env.db}"\n{exclude}'
         f'[bitwarden]\nbinary = "{sys.executable} {env.fake}"\n'
         f'[sync]\nstate_file = "{env.state_file}"\n'
         f'backup_dir = "{env.backup_dir}"\n'
@@ -964,3 +971,47 @@ def test_read_camera_command_includes_the_preview_window(monkeypatch):
 
     read_camera("/dev/video0", preview=False)
     assert "--nodisplay" in calls["command"]
+
+
+# -- excluded groups (e.g. a KeePass-only 2FA directory) ----------------
+
+def test_excluded_group_is_left_out_of_the_sync(tmp_path):
+    env = Env(tmp_path)
+    env.exclude_groups = ("2FA",)
+    env.kp_add("GitHub", "alice", "pw", group="2FA")
+    env.kp_add("Mail", "bob", "pw2")
+
+    plan, _ = execute(env, apply=False)
+
+    assert [action.title for action in plan.actions] == ["Mail"]
+
+
+def test_exclude_covers_subgroups(tmp_path):
+    env = Env(tmp_path)
+    env.exclude_groups = ("2FA",)
+    env.kp_add("GitHub", "alice", "pw", group="2FA/TOTP")
+
+    plan, _ = execute(env, apply=False)
+
+    assert plan.actions == []
+
+
+def test_reimport_into_an_excluded_group_does_not_duplicate(tmp_path):
+    env = Env(tmp_path)
+    env.exclude_groups = ("2FA",)
+    uri = _migration_uri([("JBSWY3DPEHPK3PXP", "alice@example.com", "GitHub", 1, 1, 2, 0)])
+    args = ["import-totp", "--config", str(_config_for(env)),
+            "--kdbx-password-file", _password_file(env), "--group", "2FA", "--data", uri]
+
+    assert main(args) == 0
+    assert main(args) == 0
+
+    assert len(env.kp_entries(include_excluded=True)) == 1
+
+
+def test_exclude_accepts_a_comma_separated_string():
+    from pwsync.config import _as_groups
+
+    assert _as_groups("2FA, OTP") == ("2FA", "OTP")
+    assert _as_groups(["2FA", "/OTP/"]) == ("2FA", "OTP")
+    assert _as_groups("") == ()
