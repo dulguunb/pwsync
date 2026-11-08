@@ -751,8 +751,7 @@ def test_import_totp_reads_a_qr_screenshot(tmp_path):
 
 # -- one-way copy -------------------------------------------------------
 
-COPY_BW = ["copy-from-bitwarden-to-keepass"]
-COPY_KP = ["copy-from-keepass-to-bitwarden"]
+COPY = ["copy-from-bitwarden-to-keepass"]
 
 
 def _run_copy(env, command, apply=True, monkeypatch=None):
@@ -768,7 +767,7 @@ def test_copy_bitwarden_to_keepass_creates_entries(tmp_path, monkeypatch):
     env.bw_add("GitHub", "alice", "pw1", fields={"PIN": "1234"})
     bitwarden_before = env.store.read_text()
 
-    assert _run_copy(env, COPY_BW, monkeypatch=monkeypatch) == 0
+    assert _run_copy(env, COPY, monkeypatch=monkeypatch) == 0
 
     entry = env.kp_entry("GitHub")
     assert entry.password == "pw1"
@@ -788,17 +787,17 @@ def test_copy_direction_wins_over_a_newer_keepass_change(tmp_path, monkeypatch):
     entry.mtime = NOW + timedelta(hours=1)
     kp.save()
 
-    assert _run_copy(env, COPY_BW, monkeypatch=monkeypatch) == 0
+    assert _run_copy(env, COPY, monkeypatch=monkeypatch) == 0
     assert env.kp_entry("Mail").password == "bw-pass"
 
 
 def test_copy_is_idempotent(tmp_path, monkeypatch):
     env = Env(tmp_path)
     env.bw_add("GitHub", "alice", "pw1")
-    _run_copy(env, COPY_BW, monkeypatch=monkeypatch)
+    _run_copy(env, COPY, monkeypatch=monkeypatch)
     after_first = env.db.read_bytes()
 
-    _run_copy(env, COPY_BW, monkeypatch=monkeypatch)
+    _run_copy(env, COPY, monkeypatch=monkeypatch)
 
     assert env.db.read_bytes() == after_first
 
@@ -809,18 +808,7 @@ def test_copy_dry_run_writes_nothing(tmp_path, monkeypatch):
     db_before = env.db.read_bytes()
     store_before = env.store.read_text()
 
-    assert _run_copy(env, COPY_BW, apply=False, monkeypatch=monkeypatch) == 0
+    assert _run_copy(env, COPY, apply=False, monkeypatch=monkeypatch) == 0
 
     assert env.db.read_bytes() == db_before
     assert env.store.read_text() == store_before
-
-
-def test_copy_from_keepass_to_bitwarden(tmp_path, monkeypatch):
-    env = Env(tmp_path)
-    env.kp_add("Mail", "alice", "kp-pass")
-    db_before = env.db.read_bytes()
-
-    assert _run_copy(env, COPY_KP, monkeypatch=monkeypatch) == 0
-
-    assert env.bw_item("Mail")["login"]["password"] == "kp-pass"
-    assert env.db.read_bytes() == db_before, "source must not change"

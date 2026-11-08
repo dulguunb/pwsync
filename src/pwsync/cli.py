@@ -17,11 +17,6 @@ from .keepass import Keepass, KeepassError
 from .state import State, StateError
 from .sync import Plan, Result, Syncer
 
-COPY_COMMANDS = {
-    "copy-from-bitwarden-to-keepass": "bitwarden",
-    "copy-from-keepass-to-bitwarden": "keepassxc",
-}
-
 LABELS = {
     "create-bitwarden": "create -> Bitwarden",
     "create-keepassxc": "create -> KeePassXC",
@@ -72,9 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="conflict policy for this run")
         cmd.add_argument("--deletes", choices=("ignore", "propagate"),
                          help="deletion policy for this run")
-        if name == "apply":
-            cmd.add_argument("--dry-run", action="store_true",
-                             help="print the plan without writing anything")
+
 
     link = sub.add_parser("link", parents=[common], help="manually link two entries")
     link.add_argument("--bw-id", required=True)
@@ -85,17 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
     unlink = sub.add_parser("unlink", parents=[common], help="drop a recorded link")
     unlink.add_argument("--bw-id", required=True)
 
-    for name, side, target in (
-        ("copy-from-bitwarden-to-keepass", "Bitwarden", "KeePassXC"),
-        ("copy-from-keepass-to-bitwarden", "KeePassXC", "Bitwarden"),
-    ):
-        cmd = sub.add_parser(
-            name, parents=[common],
-            help=f"one-way copy of every {side} entry into {target} "
-                 f"({side} is never modified)",
-        )
-        cmd.add_argument("--apply", action="store_true",
-                         help="write the copy (default: preview only)")
+    copy = sub.add_parser(
+        "copy-from-bitwarden-to-keepass", parents=[common],
+        help="one-way copy of every Bitwarden entry into KeePassXC "
+             "(Bitwarden is never modified)",
+    )
+    copy.add_argument("--apply", action="store_true",
+                      help="write the copy (default: preview only)")
 
     imp = sub.add_parser(
         "import-totp", parents=[common],
@@ -137,8 +126,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _unlink(cfg, args)
     if args.command == "import-totp":
         return _import_totp(cfg, args)
-    if args.command in COPY_COMMANDS:
-        return _copy(cfg, args, COPY_COMMANDS[args.command])
+    if args.command == "copy-from-bitwarden-to-keepass":
+        return _copy(cfg, args)
     if args.command == "link":
         return _link(cfg, args)
 
@@ -148,9 +137,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             syncer = Syncer(cfg, keepass, bitwarden, state)
             plan = syncer.build_plan(prefer=getattr(args, "prefer", None),
                                      deletes=getattr(args, "deletes", None))
-            applying = args.command == "apply" and not getattr(args, "dry_run", False)
+            applying = args.command == "apply"
             _print_plan(plan, hint=not applying)
-            if args.command == "diff" or getattr(args, "dry_run", False):
+            if not applying:
                 return 1 if plan.conflicts or plan.writes else 0
             result = syncer.apply(plan, deletes=getattr(args, "deletes", None))
             _print_result(result)
@@ -314,12 +303,12 @@ def _status(cfg: Config) -> int:
     return 0
 
 
-def _copy(cfg: Config, args: argparse.Namespace, source: str) -> int:
+def _copy(cfg: Config, args: argparse.Namespace) -> int:
     state = State.open(cfg.state_file)
     try:
         with _vaults(cfg, args) as (keepass, bitwarden):
             syncer = Syncer(cfg, keepass, bitwarden, state)
-            plan = syncer.build_copy_plan(source)
+            plan = syncer.build_copy_plan()
             _print_plan(plan, hint=False)
             if not args.apply:
                 if plan.writes:

@@ -138,7 +138,6 @@ the entry still syncs.
 uv run pwsync status        # vault connection, link and tombstone counts
 uv run pwsync diff          # show the plan; writes nothing
 uv run pwsync apply         # write the plan (backs up first)
-uv run pwsync apply --dry-run
 ```
 
 Exit codes: `0` success, `1` pending work for `diff` (like `git diff --exit-code`)
@@ -163,8 +162,6 @@ The direction is absolute, which makes it behave differently from a sync:
   cannot reach a write on that side;
 - entries are matched by the recorded link first, then by a unique
   title + username; anything unmatched is created fresh.
-
-The mirror is `copy-from-keepass-to-bitwarden`, with the same rules reversed.
 
 Output names the direction and the fields being replaced:
 
@@ -257,7 +254,7 @@ guessed. Use `pwsync link --bw-id … --keepass-uuid …` to link manually.
 
 ## Safety
 
-- `diff` and `apply --dry-run` never write.
+- `diff` never writes; it is the only preview, `apply` is the only writer.
 - Every write run snapshots the encrypted `.kdbx` file to
   `~/.local/state/pwsync/backups/<timestamp>/` (mode 0600). Bitwarden has its own
   server-side trash and history, so no plaintext vault export is kept locally.
