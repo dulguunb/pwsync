@@ -17,6 +17,11 @@ from .keepass import Keepass, KeepassError
 from .state import State, StateError
 from .sync import Plan, Result, Syncer
 
+COPY_COMMANDS = {
+    "copy-from-bitwarden-to-keepass": "bitwarden",
+    "copy-from-keepass-to-bitwarden": "keepassxc",
+}
+
 LABELS = {
     "create-bitwarden": "create -> Bitwarden",
     "create-keepassxc": "create -> KeePassXC",
@@ -80,6 +85,18 @@ def build_parser() -> argparse.ArgumentParser:
     unlink = sub.add_parser("unlink", parents=[common], help="drop a recorded link")
     unlink.add_argument("--bw-id", required=True)
 
+    for name, side, target in (
+        ("copy-from-bitwarden-to-keepass", "Bitwarden", "KeePassXC"),
+        ("copy-from-keepass-to-bitwarden", "KeePassXC", "Bitwarden"),
+    ):
+        cmd = sub.add_parser(
+            name, parents=[common],
+            help=f"one-way copy of every {side} entry into {target} "
+                 f"({side} is never modified)",
+        )
+        cmd.add_argument("--apply", action="store_true",
+                         help="write the copy (default: preview only)")
+
     imp = sub.add_parser(
         "import-totp", parents=[common],
         help="import TOTP accounts from a Google Authenticator export QR",
@@ -120,6 +137,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _unlink(cfg, args)
     if args.command == "import-totp":
         return _import_totp(cfg, args)
+    if args.command in COPY_COMMANDS:
+        return _copy(cfg, args, COPY_COMMANDS[args.command])
     if args.command == "link":
         return _link(cfg, args)
 
@@ -293,6 +312,27 @@ def _status(cfg: Config) -> int:
     finally:
         record.close()
     return 0
+
+
+def _copy(cfg: Config, args: argparse.Namespace, source: str) -> int:
+    state = State.open(cfg.state_file)
+    try:
+        with _vaults(cfg, args) as (keepass, bitwarden):
+            syncer = Syncer(cfg, keepass, bitwarden, state)
+            plan = syncer.build_copy_plan(source)
+            _print_plan(plan, hint=False)
+            if not args.apply:
+                if plan.writes:
+                    print(f"\ndry run: {len(plan.writes)} change(s) not written. "
+                          f"Re-run with --apply to copy.")
+                return 0
+            if not plan.writes:
+                return 0
+            result = syncer.apply(plan)
+            _print_result(result)
+            return 1 if result.errors else 0
+    finally:
+        state.close()
 
 
 def _import_totp(cfg: Config, args: argparse.Namespace) -> int:

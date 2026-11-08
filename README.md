@@ -144,6 +144,42 @@ uv run pwsync apply --dry-run
 Exit codes: `0` success, `1` pending work for `diff` (like `git diff --exit-code`)
 or write errors, `2` configuration or connection problems.
 
+## Copying one way
+
+`diff` / `apply` merge two vaults and resolve conflicts. When you want a
+migration instead — "take everything from Bitwarden and put it in KeePassXC" —
+say so explicitly:
+
+```bash
+uv run pwsync copy-from-bitwarden-to-keepass            # preview, writes nothing
+uv run pwsync copy-from-bitwarden-to-keepass --apply    # write it
+```
+
+The direction is absolute, which makes it behave differently from a sync:
+
+- the **source always wins**, even if the target was edited more recently;
+- nothing is ever deleted on either side;
+- the **source vault is never written to** — the plan says so, and the code
+  cannot reach a write on that side;
+- entries are matched by the recorded link first, then by a unique
+  title + username; anything unmatched is created fresh.
+
+The mirror is `copy-from-keepass-to-bitwarden`, with the same rules reversed.
+
+Output names the direction and the fields being replaced:
+
+```
+note: copying 2 Bitwarden entries into KeePassXC; Bitwarden is not modified
+  create -> KeePassXC    GitHub  [new, from Bitwarden]
+  update -> KeePassXC    Bank  (password, totp)  [from Bitwarden]
+
+dry run: 2 change(s) not written. Re-run with --apply to copy.
+```
+
+A second run reports `N entries already identical` and writes nothing. Both
+vaults are snapshotted before an `--apply`, and links are recorded, so a later
+`diff` sees the two sides as in sync.
+
 ## Importing 2FA codes from Google Authenticator
 
 Google Authenticator can export its accounts as QR codes:

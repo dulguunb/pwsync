@@ -438,6 +438,7 @@ def _config_for(env):
         f'[keepass]\ndatabase = "{env.db}"\n'
         f'[bitwarden]\nbinary = "{sys.executable} {env.fake}"\n'
         f'[sync]\nstate_file = "{env.state_file}"\n'
+        f'backup_dir = "{env.backup_dir}"\n'
     )
     return path
 
@@ -746,3 +747,80 @@ def test_import_totp_reads_a_qr_screenshot(tmp_path):
 
     assert code == 0
     assert env.kp_entry("GitHub: alice@example.com") is not None
+
+
+# -- one-way copy -------------------------------------------------------
+
+COPY_BW = ["copy-from-bitwarden-to-keepass"]
+COPY_KP = ["copy-from-keepass-to-bitwarden"]
+
+
+def _run_copy(env, command, apply=True, monkeypatch=None):
+    if monkeypatch is not None:
+        monkeypatch.setenv("BW_SESSION", "fake-session")
+    args = command + ["--config", str(_config_for(env)),
+                      "--kdbx-password-file", _password_file(env)]
+    return main(args + (["--apply"] if apply else []))
+
+
+def test_copy_bitwarden_to_keepass_creates_entries(tmp_path, monkeypatch):
+    env = Env(tmp_path)
+    env.bw_add("GitHub", "alice", "pw1", fields={"PIN": "1234"})
+    bitwarden_before = env.store.read_text()
+
+    assert _run_copy(env, COPY_BW, monkeypatch=monkeypatch) == 0
+
+    entry = env.kp_entry("GitHub")
+    assert entry.password == "pw1"
+    assert entry.username == "alice"
+    assert entry.custom_properties["PIN"] == "1234"
+    assert env.store.read_text() == bitwarden_before, "source must not change"
+
+
+def test_copy_direction_wins_over_a_newer_keepass_change(tmp_path, monkeypatch):
+    env = Env(tmp_path)
+    env.bw_add("Mail", "alice", "bw-pass")
+    execute(env)  # link the two sides
+
+    kp = env.kp()
+    entry = next(e for e in kp.entries if e.title == "Mail")
+    entry.password = "kp-newer"
+    entry.mtime = NOW + timedelta(hours=1)
+    kp.save()
+
+    assert _run_copy(env, COPY_BW, monkeypatch=monkeypatch) == 0
+    assert env.kp_entry("Mail").password == "bw-pass"
+
+
+def test_copy_is_idempotent(tmp_path, monkeypatch):
+    env = Env(tmp_path)
+    env.bw_add("GitHub", "alice", "pw1")
+    _run_copy(env, COPY_BW, monkeypatch=monkeypatch)
+    after_first = env.db.read_bytes()
+
+    _run_copy(env, COPY_BW, monkeypatch=monkeypatch)
+
+    assert env.db.read_bytes() == after_first
+
+
+def test_copy_dry_run_writes_nothing(tmp_path, monkeypatch):
+    env = Env(tmp_path)
+    env.bw_add("GitHub", "alice", "pw1")
+    db_before = env.db.read_bytes()
+    store_before = env.store.read_text()
+
+    assert _run_copy(env, COPY_BW, apply=False, monkeypatch=monkeypatch) == 0
+
+    assert env.db.read_bytes() == db_before
+    assert env.store.read_text() == store_before
+
+
+def test_copy_from_keepass_to_bitwarden(tmp_path, monkeypatch):
+    env = Env(tmp_path)
+    env.kp_add("Mail", "alice", "kp-pass")
+    db_before = env.db.read_bytes()
+
+    assert _run_copy(env, COPY_KP, monkeypatch=monkeypatch) == 0
+
+    assert env.bw_item("Mail")["login"]["password"] == "kp-pass"
+    assert env.db.read_bytes() == db_before, "source must not change"

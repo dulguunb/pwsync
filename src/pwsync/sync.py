@@ -193,6 +193,87 @@ class Syncer:
                                        entry=entry, bw_id=bw_id))
         return plan
 
+    def build_copy_plan(self, source: str) -> Plan:
+        """A one-way copy: every entry from ``source`` written to the other vault.
+
+        Unlike :meth:`build_plan` this does not compare change times -- the
+        source always wins -- and it never deletes anything. That makes the
+        direction of a migration explicit instead of a merge.
+        """
+        if source not in ("bitwarden", "keepassxc"):
+            raise ValueError(f"unknown copy source: {source}")
+        bw = self.bitwarden.entries()
+        kp = self.keepass.entries()
+        if not self.cfg.sync_totp:
+            bw = {key: entry.with_changes(totp="") for key, entry in bw.items()}
+            kp = {key: entry.with_changes(totp="") for key, entry in kp.items()}
+
+        origin, target = (bw, kp) if source == "bitwarden" else (kp, bw)
+        origin_name = "Bitwarden" if source == "bitwarden" else "KeePassXC"
+        target_name = "KeePassXC" if source == "bitwarden" else "Bitwarden"
+        link_of = (lambda key: self.state.links.get(key)) if source == "bitwarden" else (
+            lambda key: next((l for l in self.state.links.values() if l.kp_uuid == key), None))
+
+        plan = Plan()
+        index: dict[tuple[str, str], list[str]] = {}
+        for key, entry in target.items():
+            index.setdefault(entry.match_key(), []).append(key)
+
+        claimed: set[str] = set()
+        identical = 0
+        for key, entry in sorted(origin.items()):
+            if not entry.title.strip():
+                plan.notices.append(f"skipping untitled {origin_name} entry")
+                continue
+            counterpart = None
+            link = link_of(key)
+            if link is not None:
+                other = link.kp_uuid if source == "bitwarden" else link.bw_id
+                if other in target and other not in claimed:
+                    counterpart = other
+            if counterpart is None:
+                candidates = [c for c in index.get(entry.match_key(), []) if c not in claimed]
+                counterpart = candidates[0] if len(candidates) == 1 else None
+            if counterpart is None:
+                plan.actions.append(Action(
+                    "create-keepassxc" if source == "bitwarden" else "create-bitwarden",
+                    title=entry.title, entry=entry,
+                    bw_id=key if source == "bitwarden" else None,
+                    kp_uuid=key if source == "keepassxc" else None,
+                    note=f"new, from {origin_name}",
+                ))
+                continue
+
+            claimed.add(counterpart)
+            current = target[counterpart]
+            if current.content_hash() == entry.content_hash():
+                identical += 1
+                if link is None:
+                    plan.actions.append(Action(
+                        "link", title=entry.title, entry=entry,
+                        bw_id=key if source == "bitwarden" else counterpart,
+                        kp_uuid=counterpart if source == "bitwarden" else key,
+                        note="identical; recording link",
+                    ))
+                continue
+            plan.actions.append(Action(
+                "update-keepassxc" if source == "bitwarden" else "update-bitwarden",
+                title=entry.title, entry=entry, current=current,
+                fields=entry.diff(current),
+                bw_id=key if source == "bitwarden" else counterpart,
+                kp_uuid=counterpart if source == "bitwarden" else key,
+                note=f"from {origin_name}",
+            ))
+
+        if identical:
+            plan.notices.append(f"{identical} entr{'y' if identical == 1 else 'ies'} already "
+                                f"identical in {target_name}")
+        plan.notices.append(
+            f"copying {len(origin)} {origin_name} entr{'y' if len(origin) == 1 else 'ies'} "
+            f"into {target_name}; {origin_name} is not modified"
+        )
+        return plan
+
     def _plan_missing(self, plan: Plan, link: Link, bw: dict[str, Entry],
                       kp: dict[str, Entry], deletes: str) -> None:
         if link.bw_id in bw:  # vanished from KeePassXC
