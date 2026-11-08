@@ -11,6 +11,8 @@ from pathlib import Path
 from . import __version__
 from .bitwarden import Bitwarden, BitwardenError
 from .config import DEFAULT_NAME, Config, ConfigError, example_toml, load
+from .googleauth import MigrationError, decode_uri, read_qr, secret_of
+from .model import Entry
 from .keepass import Keepass, KeepassError
 from .state import State, StateError
 from .sync import Plan, Result, Syncer
@@ -77,6 +79,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     unlink = sub.add_parser("unlink", parents=[common], help="drop a recorded link")
     unlink.add_argument("--bw-id", required=True)
+
+    imp = sub.add_parser(
+        "import-totp", parents=[common],
+        help="import TOTP accounts from a Google Authenticator export QR",
+    )
+    imp.add_argument("--data", action="append", default=[], metavar="URI",
+                     help="an otpauth-migration:// string from the export QR")
+    imp.add_argument("--image", action="append", default=[], metavar="FILE",
+                     help="screenshot of that QR (decoded with zbarimg)")
+    imp.add_argument("--group", default="",
+                     help="KeePass group to import into (default: the sync root)")
+    imp.add_argument("--dry-run", action="store_true", help="list without writing")
     return parser
 
 
@@ -104,6 +118,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _status(cfg)
     if args.command == "unlink":
         return _unlink(cfg, args)
+    if args.command == "import-totp":
+        return _import_totp(cfg, args)
     if args.command == "link":
         return _link(cfg, args)
 
@@ -276,6 +292,58 @@ def _status(cfg: Config) -> int:
         print(f"tombstones  {tombstones}")
     finally:
         record.close()
+    return 0
+
+
+def _import_totp(cfg: Config, args: argparse.Namespace) -> int:
+    uris = list(args.data)
+    for image in args.image:
+        uris.append(read_qr(image))
+    if not uris:
+        raise ConfigError("nothing to import: pass --data URI or --image FILE")
+
+    accounts = []
+    for uri in uris:
+        try:
+            found, _batch = decode_uri(uri)
+        except MigrationError as exc:
+            raise ConfigError(str(exc)) from exc
+        accounts.extend(found)
+
+    keepass = Keepass(
+        cfg.database,
+        _kdbx_password(args),
+        root_group=cfg.root_group,
+        keyfile=cfg.keyfile,
+        separator=cfg.folder_separator,
+    )
+    # Compare on the secret itself: the same seed may already be stored with a
+    # different label or parameter order.
+    known = {secret_of(entry.totp) for entry in keepass.entries().values() if entry.totp}
+
+    imported = skipped = 0
+    for account in accounts:
+        if account.secret in known:
+            skipped += 1
+            continue
+        known.add(account.secret)
+        imported += 1
+        if args.dry_run:
+            print(f"  would import {account.title} ({account.kind.upper()})")
+            continue
+        keepass.create(Entry(
+            title=account.title,
+            username=account.name,
+            password="",
+            totp=account.otpauth_uri(),
+            folder=args.group,
+        ))
+        print(f"  imported {account.title} ({account.kind.upper()})")
+
+    if not args.dry_run and keepass.dirty:
+        keepass.save()
+    verb = "would import" if args.dry_run else "imported"
+    print(f"{imported} {verb}, {skipped} already present")
     return 0
 
 

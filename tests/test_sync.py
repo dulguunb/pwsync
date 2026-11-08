@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -19,6 +20,7 @@ from pwsync.config import Config
 from pwsync.keepass import Keepass, KeepassError
 from pwsync.state import State
 from pwsync.sync import Syncer
+from pwsync.googleauth import decode_uri, secret_of
 from pwsync.totp import normalize
 
 PASSWORD = "correct horse battery staple"
@@ -634,3 +636,113 @@ def test_named_environment_variable_must_be_set(tmp_path, capsys, monkeypatch):
 
     assert code == 2
     assert "EMPTY_ONE" in capsys.readouterr().err
+
+
+# -- Google Authenticator import ----------------------------------------
+
+def _varint(n):
+    out = b""
+    while True:
+        byte = n & 0x7F
+        n >>= 7
+        out += bytes([byte | (0x80 if n else 0)])
+        if not n:
+            return out
+
+
+def _migration_uri(accounts):
+    """Build a payload the way Google Authenticator writes it."""
+    def key(number, wire):
+        return _varint((number << 3) | wire)
+
+    def ld(number, payload):
+        return key(number, 2) + _varint(len(payload)) + payload
+
+    def vi(number, value):
+        return key(number, 0) + _varint(value)
+
+    payload = b""
+    for seed, name, issuer, algo, digits, kind, counter in accounts:
+        body = (ld(1, base64.b32decode(seed)) + ld(2, name.encode())
+                + ld(3, issuer.encode()) + vi(4, algo) + vi(5, digits) + vi(6, kind))
+        if counter:
+            body += vi(7, counter)
+        payload += ld(1, body)
+    payload += vi(2, 1)
+    return ("otpauth-migration://offline?data="
+            + base64.b64encode(payload).decode())
+
+
+def test_decode_migration_payload_reads_every_field():
+    uri = _migration_uri([
+        ("JBSWY3DPEHPK3PXP", "alice@example.com", "GitHub", 1, 1, 2, 0),
+        ("KRSXG5CTMVRXEZLU", "bob@example.com", "Bank", 2, 2, 2, 0),
+        ("MFRGGZDFMZTWQ2LK", "carol@example.com", "Legacy", 1, 1, 1, 5),
+    ])
+
+    accounts, batch = decode_uri(uri)
+
+    assert batch == 0
+    assert accounts[0].secret == "JBSWY3DPEHPK3PXP"   # raw bytes, not ASCII
+    assert accounts[0].algorithm == "SHA1"
+    assert accounts[1].algorithm == "SHA256"
+    assert accounts[1].digits == 8
+    assert accounts[2].kind == "hotp"
+    assert accounts[2].counter == 5
+    assert accounts[1].otpauth_uri().startswith("otpauth://totp/Bank%3Abob")
+
+
+def test_secret_of_ignores_the_label():
+    assert secret_of("otpauth://totp/A?secret=ABC&issuer=A") == "ABC"
+    assert secret_of("not a uri") == ""
+
+
+def test_import_totp_writes_entries_with_otp(tmp_path, capsys):
+    env = Env(tmp_path)
+    uri = _migration_uri([
+        ("JBSWY3DPEHPK3PXP", "alice@example.com", "GitHub", 1, 1, 2, 0),
+        ("MFRGGZDFMZTWQ2LK", "carol@example.com", "Legacy", 1, 1, 1, 5),
+    ])
+    args = ["import-totp", "--config", str(_config_for(env)),
+            "--kdbx-password-file", _password_file(env), "--data", uri]
+
+    assert main(args) == 0
+
+    totp = env.kp_entry("GitHub: alice@example.com")
+    hotp = env.kp_entry("Legacy: carol@example.com")
+    assert "JBSWY3DPEHPK3PXP" in totp.otp
+    assert totp.otp.startswith("otpauth://totp/")
+    assert "counter=5" in hotp.otp and hotp.otp.startswith("otpauth://hotp/")
+
+    # importing the same export again must not duplicate anything
+    assert main(args) == 0
+    assert len(env.kp_entries()) == 2
+
+
+def test_import_totp_rejects_a_foreign_uri(tmp_path, capsys):
+    env = Env(tmp_path)
+    code = main(["import-totp", "--config", str(_config_for(env)),
+                 "--kdbx-password-file", _password_file(env),
+                 "--data", "https://example.com/not-a-qr"])
+
+    assert code == 2
+    assert "otpauth-migration" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(
+    not (shutil.which("zbarimg") and shutil.which("qrencode")),
+    reason="needs zbarimg and qrencode",
+)
+def test_import_totp_reads_a_qr_screenshot(tmp_path):
+    env = Env(tmp_path)
+    uri = _migration_uri([("JBSWY3DPEHPK3PXP", "alice@example.com", "GitHub", 1, 1, 2, 0)])
+    png = tmp_path / "export.png"
+    subprocess.run(["qrencode", "-o", str(png), "-t", "PNG"],
+                   input=uri, text=True, check=True)
+
+    code = main(["import-totp", "--config", str(_config_for(env)),
+                 "--kdbx-password-file", _password_file(env),
+                 "--image", str(png)])
+
+    assert code == 0
+    assert env.kp_entry("GitHub: alice@example.com") is not None

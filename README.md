@@ -144,6 +144,40 @@ uv run pwsync apply --dry-run
 Exit codes: `0` success, `1` pending work for `diff` (like `git diff --exit-code`)
 or write errors, `2` configuration or connection problems.
 
+## Importing 2FA codes from Google Authenticator
+
+Google Authenticator can export its accounts as QR codes:
+
+1. In the app: menu → **Transfer accounts** → **Export accounts**, pick the
+   accounts, and let it show the QR code(s) — 10 accounts per code.
+2. Screenshot each code (or scan it with any QR reader to get the
+   `otpauth-migration://offline?data=…` string).
+
+Then, with `zbarimg` installed (`apt install zbar-tools`):
+
+```bash
+uv run pwsync import-totp --image export-1.png --image export-2.png
+# or straight from the decoded string:
+uv run pwsync import-totp --data 'otpauth-migration://offline?data=…'
+```
+
+It prompts for the master password, adds one entry per account (title
+`Issuer: name`, TOTP/HOTP URI in the `otp` attribute), skips anything whose
+secret is already in the vault, and `--dry-run` lists without writing. Codes are
+importable into KeePassXC directly — no further conversion.
+
+```bash
+uv run pwsync import-totp --image export-1.png --dry-run
+uv run pwsync import-totp --image export-1.png --group "Imported 2FA"
+```
+
+> An export QR contains the raw secrets: delete the screenshots once imported.
+> The command only prints account titles, never the seeds.
+
+For a single account (for example the 2FA on a Google account itself), skip the
+export: during setup choose **"Can't scan it?"** and copy the text key, then add
+it to a KeePassXC entry as a TOTP secret.
+
 ## What maps to what
 
 | Bitwarden           | KeePassXC                          |
