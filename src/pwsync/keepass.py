@@ -220,9 +220,13 @@ class Keepass:
         self._find(uuid_str).delete()
         self.dirty = True
 
-    def save(self) -> bool:
-        """Atomically persist pending writes; refuses if the file changed."""
-        if not self.dirty:
+    def save(self, force: bool = False) -> bool:
+        """Atomically persist pending writes; refuses if the file changed.
+
+        ``force`` rewrites an unchanged database, used by the paired-database
+        operation so both files are saved together whenever either gains entries.
+        """
+        if not self.dirty and not force:
             return False
         if _read(self.path) != self._fingerprint:
             raise KeepassError(

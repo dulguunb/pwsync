@@ -10,7 +10,9 @@ from pathlib import Path
 
 from . import __version__
 from .bitwarden import Bitwarden, BitwardenError
-from .config import DEFAULT_NAME, Config, ConfigError, example_toml, load
+from .config import (DEFAULT_BACKUP_DIR, DEFAULT_NAME, Config, ConfigError,
+                     example_toml, load)
+from .database_sync import apply_database_sync, plan_database_sync
 from .googleauth import MigrationError, decode_uri, read_camera, read_qr, secret_of
 from .model import Entry
 from .keepass import Keepass, KeepassError
@@ -59,6 +61,22 @@ def build_parser() -> argparse.ArgumentParser:
                       help="create an empty .kdbx at --database if it is missing")
 
     sub.add_parser("status", parents=[common], help="show vault and link status")
+
+    db_sync = sub.add_parser(
+        "sync-keepass-databases",
+        help="copy missing KeePassXC entries both ways; keep differing versions",
+    )
+    db_sync.add_argument("database_a", help="first .kdbx path")
+    db_sync.add_argument("database_b", help="second .kdbx path")
+    db_sync.add_argument("--keyfile-a", help="key file for database A")
+    db_sync.add_argument("--keyfile-b", help="key file for database B")
+    db_sync.add_argument("--root-group-a", default="", help="scope in database A")
+    db_sync.add_argument("--root-group-b", default="", help="scope in database B")
+    db_sync.add_argument("--separator", default="/", help="group path separator")
+    db_sync.add_argument("--backup-dir", default=str(DEFAULT_BACKUP_DIR),
+                         help="where to store encrypted pre-write backups")
+    db_sync.add_argument("--apply", action="store_true",
+                         help="write both databases (default: preview only)")
 
     for name, help_text in (("diff", "show what a sync would change"),
                             ("apply", "apply the pending changes")):
@@ -127,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "init":
         return _init(args)
+    if args.command == "sync-keepass-databases":
+        return _sync_keepass_databases(args)
 
     cfg = load(args.config)
     if args.command == "status":
@@ -327,6 +347,55 @@ def _scan_camera(device: str, preview: bool) -> str:
     uri = read_camera(device, preview=show)
     print(f"read a QR code from {device}", file=sys.stderr)
     return uri
+
+
+def _entry_label(entry: Entry) -> str:
+    label = entry.title
+    if entry.username:
+        label += f" ({entry.username})"
+    return label
+
+
+def _sync_keepass_databases(args: argparse.Namespace) -> int:
+    path_a = Path(args.database_a).expanduser().resolve()
+    path_b = Path(args.database_b).expanduser().resolve()
+    if path_a == path_b:
+        raise ConfigError("the two KeePass database paths must be different")
+
+    if not sys.stdin.isatty():
+        raise ConfigError(
+            "sync-keepass-databases requires an interactive terminal so both "
+            "master passwords are entered without echo"
+        )
+    password_a = getpass.getpass(f"Master password for {path_a}: ")
+    password_b = getpass.getpass(f"Master password for {path_b}: ")
+    a = Keepass(path_a, password_a, root_group=args.root_group_a,
+                keyfile=args.keyfile_a, separator=args.separator)
+    b = Keepass(path_b, password_b, root_group=args.root_group_b,
+                keyfile=args.keyfile_b, separator=args.separator)
+    plan = plan_database_sync(a, b)
+
+    print("Two-way KeePassXC copy: matching entries are identified by title + username.")
+    print("Differing versions are copied as separate entries; neither is merged or overwritten.")
+    if plan.conflicts:
+        print(f"{plan.conflicts} overlapping title+username identity/identities "
+              "have differing content; preserving each version.")
+    if not plan.add_to_a and not plan.add_to_b:
+        print("No entries to add; both databases are already equivalent.")
+        return 0
+    for entry in plan.add_to_a:
+        print("  add to A: " + _entry_label(entry))
+    for entry in plan.add_to_b:
+        print("  add to B: " + _entry_label(entry))
+    if not args.apply:
+        print("Preview only; nothing written. Re-run with --apply to add these entries.")
+        return 0
+
+    result = apply_database_sync(a, b, plan, args.backup_dir)
+    print(f"Added {result.added_to_a} entr{'y' if result.added_to_a == 1 else 'ies'} to A "
+          f"and {result.added_to_b} to B.")
+    print(f"Encrypted pre-write backups: {result.backups[0]} and {result.backups[1]}")
+    return 0
 
 
 def _copy(cfg: Config, args: argparse.Namespace) -> int:
